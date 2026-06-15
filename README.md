@@ -1,40 +1,68 @@
-# Portal do Pescador
+# Portal do Pescador 🎣
 
-Chatbot de linha de comando, em **português brasileiro**, que ajuda você a achar o equipamento de pesca ideal pelo melhor custo-benefício. Conversa com você no terminal, entende seu perfil (iniciante / intermediário / avançado), modalidade (rio, mar, lago, embarcado, etc.), item desejado e CEP, busca produtos reais em sites brasileiros, calcula **preço + frete** até o seu CEP e recomenda a melhor opção — com link direto para a página de compra.
+Aplicação web em **português brasileiro** que ajuda o pescador a achar equipamento de pesca pelo melhor custo-benefício. Conversa em linguagem natural via chatbot, entende seu perfil (iniciante / intermediário / avançado), busca produtos reais em marketplaces brasileiros (Amazon, Mercado Livre, Magazine Luiza, Centauro, Casas Bahia), calcula **preço + frete** até o seu CEP e entrega uma recomendação com link direto pra página de compra.
 
-Tem **cadastro de usuário** (nome, e-mail, CEP, nível) e **persistência em PostgreSQL**: tudo que você conversa fica salvo, e o bot lembra de você nas conversas seguintes (cumprimenta pelo nome, conhece seu nível, vê seu histórico de recomendações).
+Tem **cadastro com senha**, **carrinho persistente**, **histórico de recomendações**, **modal de perfil editável** e até busca de **locais de pesca** próximos ao seu CEP.
 
-A camada conversacional **e** a busca de produtos usam a **API da Anthropic (Claude)**: a conversa via *tool use*, e a busca via a tool nativa `web_search` da Anthropic, que executa as pesquisas server-side e retorna resultados com URLs reais.
+A camada conversacional e a busca de produtos usam a **API da Anthropic (Claude Haiku 4.5)** via *tool use* e a tool nativa `web_search`. A persistência é em **PostgreSQL**.
+
+---
+
+## Stack
+
+| Camada | Tecnologia |
+|---|---|
+| **Frontend** | SPA vanilla JS (sem framework) + CSS animado |
+| **Backend** | Python 3.10+ / Flask |
+| **Conversa & busca** | Anthropic Claude (Haiku 4.5) via REST + tool use |
+| **Persistência** | PostgreSQL 14+ via `psycopg 3` |
+| **APIs externas** | Anthropic (web_search), ViaCEP, Mercado Livre |
+| **Auth** | E-mail + senha (PBKDF2-SHA256, 600k iterações) |
 
 ---
 
 ## Como funciona
 
 ```
-┌─────────┐  email/cadastro  ┌─────────┐                 ┌──────────────┐
-│ usuário │ ───────────────▶ │ main.py │ ──────────────▶ │ PostgreSQL   │
-│ (CMD)   │                  │  (CLI)  │  log mensagens  │  (usuários,  │
-└─────────┘                  └────┬────┘  + recomendações│   conversas, │
-                                  │                       │   mensagens, │
-                                  ▼                       │   recomend.) │
-                          ┌──────────────────┐            └──────────────┘
-                          │ Claude Sonnet    │ ─┐
-                          │   (conversa)     │  │
-                          └──────────────────┘  │
-                                                │
-                       ┌────────────────────────┼─────────────────────────────┐
-                       ▼                        ▼                             ▼
-               web_search               validar_cep                    consultar_frete
-              (busca em sites BR)       (ViaCEP)                       (estimativa regional)
-                       │                                                       │
-                       └─────► registrar_recomendacao ──► PostgreSQL ◄──────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Frontend SPA (templates/index.html + static/js/app.js)         │
+│  Login/Cadastro · Chat · Carrinho · Perfil · Locais             │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ JSON via fetch()
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Flask Backend (app.py)                                         │
+│  /api/auth · /api/chat · /api/cart · /api/cep · /api/locais     │
+└──────────┬─────────────────────────────────┬────────────────────┘
+           │                                 │
+           ▼                                 ▼
+┌──────────────────────┐         ┌────────────────────────────────┐
+│ PostgreSQL (db.py)   │         │ Bot conversacional (bot.py)    │
+│                      │         │  - Claude Haiku 4.5            │
+│ - usuarios           │         │  - tool use loop               │
+│ - conversas          │         │  - history em memória/sessão   │
+│ - mensagens          │         └────────────┬───────────────────┘
+│ - recomendacoes      │                      │
+│ - carrinho           │                      ▼
+└──────────────────────┘         ┌────────────────────────────────┐
+                                  │ Tools (tools.py)               │
+                                  │  - buscar_produto (multi-loja) │
+                                  │  - validar_cep (ViaCEP)        │
+                                  │  - consultar_frete (regional)  │
+                                  │  - registrar_recomendacao      │
+                                  │  - carrinho (add/view/del)     │
+                                  └────────────────────────────────┘
 ```
 
-- **Conversa + busca:** Claude (`claude-sonnet-4-6` por padrão) via API REST direta.
-- **Persistência:** PostgreSQL via `psycopg 3` — schema criado automaticamente na primeira execução.
-- **Busca de produtos:** tool nativa `web_search` da Anthropic, server-side, com `user_location: BR`.
-- **CEP:** [ViaCEP](https://viacep.com.br/) — gratuito, sem auth.
-- **Frete:** estimativa regional baseada na primeira faixa do CEP.
+### Estratégia de busca de produtos
+
+`buscar_produto(query, preco_max?)` tenta em cascata:
+
+1. **API pública do Mercado Livre** — rápido se funcionar
+2. **Chamada Anthropic secundária** isolada da conversa principal: faz `web_search` em Amazon / Magazine Luiza / Centauro / Mercado Livre e extrai a URL canônica com regex agressiva
+3. **Scraping HTML** da listagem ML — último recurso
+
+Em todos os casos, valida que a URL seja **específica de produto** (com `MLB-`, `/dp/XXX`, `/p/XXX`, `/produto/`), nunca de busca/listagem (`lista.`, `/c/`, `?q=`).
 
 ---
 
@@ -42,17 +70,18 @@ A camada conversacional **e** a busca de produtos usam a **API da Anthropic (Cla
 
 | Tabela | Conteúdo |
 |---|---|
-| `usuarios` | nome, email, CEP, nível de experiência, data do cadastro |
+| `usuarios` | nome, e-mail, senha (hash), CEP, nível de experiência |
 | `conversas` | uma por sessão; com início e fim |
-| `mensagens` | tudo que o usuário e o bot trocaram (texto bruto) |
-| `recomendacoes` | produto, preço, frete, total, loja, link, status (recomendado / comprado / descartado) |
+| `mensagens` | tudo que o usuário e o bot trocaram |
+| `recomendacoes` | produtos sugeridos (nome, preço, frete, total, loja, link) |
+| `carrinho` | itens persistidos entre sessões |
 
 ---
 
 ## Pré-requisitos
 
 - **Python 3.10 ou superior**
-- **PostgreSQL 14+** rodando localmente
+- **PostgreSQL 14+** rodando localmente (ou remoto)
 - Chave da **Anthropic** com crédito (a partir de US$ 5) — https://console.anthropic.com/settings/keys
 - Conexão de internet
 
@@ -60,38 +89,38 @@ A camada conversacional **e** a busca de produtos usam a **API da Anthropic (Cla
 
 ## Instalação
 
-### 1. Instale o PostgreSQL no Windows
-
-1. Baixe o instalador oficial: https://www.postgresql.org/download/windows/
-2. Rode o setup (**EnterpriseDB Installer**). Sugestões durante a instalação:
-   - **Senha do superuser `postgres`:** escolha uma e **anote** (vai pro `.env`).
-   - **Porta:** deixe a padrão `5432`.
-   - **Locale:** Default ou `Portuguese, Brazil`.
-3. Marque **Stack Builder** como opcional (pode pular).
-4. Ao final, o serviço **PostgreSQL** já fica rodando como serviço do Windows (auto-start).
-
-### 2. Crie o banco de dados `pescador`
-
-Abra o **SQL Shell (psql)** que vem com o instalador (Iniciar → "SQL Shell"). Pressione Enter pros padrões e digite a senha que você definiu. Então:
-
-```sql
-CREATE DATABASE pescador;
-\q
-```
-
-> Alternativa via PowerShell:
-> ```powershell
-> & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -c "CREATE DATABASE pescador;"
-> ```
-
-As tabelas (`usuarios`, `conversas`, `mensagens`, `recomendacoes`) são criadas automaticamente pelo bot na primeira execução.
-
-### 3. Entre no diretório do projeto e crie um venv
+### 1. Clone o repositório
 
 ```powershell
-cd c:\caminho\para\portalDoPescador
+git clone https://github.com/igu7x/portal_do_pescador.git
+cd portal_do_pescador
+```
+
+### 2. Instale o PostgreSQL e crie o banco
+
+Baixe o instalador oficial: https://www.postgresql.org/download/windows/
+
+Depois, no `psql`:
+```sql
+CREATE DATABASE pescador;
+```
+
+> Ou via pgAdmin: clique direito em **Databases** → **Create** → **Database** → nome `pescador`.
+
+As tabelas são criadas automaticamente pelo Flask na primeira execução.
+
+### 3. Crie um virtualenv
+
+**Windows (PowerShell):**
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+```
+
+**Linux / macOS:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
 ### 4. Instale as dependências
@@ -110,100 +139,94 @@ notepad .env
 Preencha:
 ```env
 ANTHROPIC_API_KEY=sk-ant-api03-...
-ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 DATABASE_URL=postgresql://postgres:SUA_SENHA@localhost:5432/pescador
 ```
 
-> **Importante:** o `.env` está no `.gitignore` — nunca commite ele em repositório público.
+> ⚠️ O arquivo `.env` está no `.gitignore` — nunca commite ele.
 
 ---
 
 ## Como rodar
 
+### Modo Web (recomendado)
+
+```powershell
+python app.py
+```
+
+Abra http://127.0.0.1:5000 no navegador.
+
+### Modo CLI (legado)
+
 ```powershell
 python main.py
 ```
 
-### Primeira vez (cadastro)
+---
 
-```
-========================================================
-            P O R T A L   D O   P E S C A D O R
-========================================================
+## Endpoints da API
 
-  Pra começar, me informa seu e-mail:
-  email > teixeiraigor09@gmail.com
-
-  Parece que é sua primeira vez aqui. Vou te cadastrar rapidinho.
-
-  seu nome > Igor
-  seu CEP (8 dígitos) > 04567-000
-    → São Paulo/SP
-  Qual seu nível de experiência com pesca?
-    [1] iniciante  [2] intermediário  [3] avançado
-  nível > 2
-
-  Pronto, Igor! Cadastro feito. Vamos pescar! 🎣
-
-  Olá, Igor! Tudo certo? O que você tá procurando hoje?
-você> ...
-```
-
-### Volta de outro dia
-
-```
-  email > teixeiraigor09@gmail.com
-  Bem-vindo de volta, Igor! 🎣
-
-  E aí Igor! Vi que semana passada você levou aquela vara
-  Aramis Albatroz pra represa. Como tá indo? O que tu procura
-  hoje?
-você> ...
-```
-
-### Flags úteis
-
-| Flag                 | Descrição                                            |
-|----------------------|------------------------------------------------------|
-| `--verbose` / `-v`   | Mostra cada chamada de tool client-side (útil pra debug). |
-| `--model NOME` / `-m`| Override do modelo Claude (ex: `--model claude-opus-4-7`). |
-
-### Encerrando
-
-Digite **`sair`**, **`exit`**, **`quit`** ou **`fim`**. A conversa é marcada como finalizada no banco.
+| Método | Rota | Descrição |
+|---|---|---|
+| `GET` | `/` | Serve a SPA |
+| `POST` | `/api/auth/check` | Verifica se e-mail está cadastrado |
+| `POST` | `/api/auth/register` | Cadastro de novo usuário (com senha) |
+| `POST` | `/api/auth/login` | Login (e-mail + senha) |
+| `POST` | `/api/auth/logout` | Sair |
+| `GET`/`PATCH` | `/api/auth/me` | Ver/editar perfil (CEP, nível) |
+| `POST` | `/api/chat/start` | Inicia conversa com o bot |
+| `POST` | `/api/chat/message` | Envia mensagem para o bot |
+| `GET` | `/api/cart` | Lista itens do carrinho |
+| `POST` | `/api/cart/add` | Adiciona item via clique no botão |
+| `DELETE` | `/api/cart/item/<id>` | Remove um item |
+| `DELETE` | `/api/cart` | Esvazia o carrinho |
+| `POST` | `/api/cep/validate` | Valida CEP via ViaCEP |
+| `POST` | `/api/locais` | Busca pesqueiros próximos ao CEP |
 
 ---
 
-## Conferindo o que o banco salvou
+## Funcionalidades
 
-Pelo `psql`:
+### 🔐 Login e cadastro
+- E-mail + senha (PBKDF2-SHA256 com 600k iterações)
+- Verificação de CEP em tempo real durante o cadastro
+- Modal de perfil pra editar CEP/nível depois
 
-```sql
-\c pescador
+### 💬 Chat com o bot
+- IA com tom amigável em PT-BR
+- Pergunta modalidade/orçamento pro UX, mas busca igual
+- Spinner "pensando..." enquanto processa
+- Mensagens persistidas no banco
 
--- Usuários
-SELECT id, nome, email, cep, nivel_experiencia FROM usuarios;
+### 🛒 Carrinho persistente
+- Adiciona produto recomendado com 1 clique
+- Modal de carrinho com total + remover item
+- Sobrevive entre sessões (vinculado ao usuário)
 
--- Última conversa
-SELECT id, autor, conteudo, criado_em
-FROM mensagens
-WHERE conversa_id = (SELECT MAX(id) FROM conversas)
-ORDER BY id;
+### 🎣 Busca de produtos
+- Multi-marketplace: Amazon, Mercado Livre, Magazine Luiza, Centauro, Casas Bahia
+- Retorna URL **específica** do produto (nunca lista/busca)
+- Estimativa de frete por região do CEP
 
--- Histórico de recomendações
-SELECT u.nome, r.nome_produto, r.preco, r.total, r.loja, r.criado_em
-FROM recomendacoes r JOIN usuarios u ON u.id = r.usuario_id
-ORDER BY r.criado_em DESC;
-```
+### 📍 Locais de pesca
+- Botão "Locais" no header
+- Busca pesqueiros próximos ao CEP do usuário via Claude
+- Retorna nome, tipo (pesque-pague, represa, etc.), endereço, distância
+
+### 🎨 Frontend animado
+- Fundo aquático com peixes nadando, bolhas e ondas
+- Logo SVG inline com gradiente
+- Mobile-friendly
 
 ---
 
 ## Custo estimado
 
-- **Claude Sonnet 4.6:** ~US$ 3 por milhão de tokens de input, US$ 15 por milhão de output.
-- **Web search:** ~US$ 10 por 1000 buscas (~US$ 0,01 por busca).
-- Cada turno do bot: **~US$ 0,03 a 0,15** (depende se usa busca).
-- **US$ 5 ≈ 50–100 conversas. US$ 20 ≈ 200–400.**
+- **Claude Haiku 4.5:** ~US$ 1/M input, ~US$ 5/M output tokens
+- **Web search nativo:** ~US$ 10 por 1000 buscas (~US$ 0.01 por busca)
+- Cada turno do bot: **~US$ 0,03 a 0,10** (depende se usa busca)
+- **US$ 5 ≈ 100–200 conversas completas. US$ 20 ≈ 400–800.**
 
 ---
 
@@ -211,46 +234,59 @@ ORDER BY r.criado_em DESC;
 
 ```
 portalDoPescador/
-├── main.py            # CLI: cadastro/login, loop de input, mensagens de erro
-├── bot.py             # Cliente Claude (REST) + tool use loop + system prompt
-├── tools.py           # validar_cep, consultar_frete (busca é server-side)
-├── db.py              # Schema + queries do PostgreSQL
-├── requirements.txt   # requests, python-dotenv, psycopg[binary]
+├── app.py                  # Flask backend + endpoints REST
+├── auth_utils.py           # Hash de senha PBKDF2-SHA256
+├── bot.py                  # Cliente Claude + tool use loop
+├── tools.py                # Tools: busca, CEP, frete, carrinho
+├── db.py                   # Schema PostgreSQL + queries
+├── locais.py               # Busca de pesqueiros via Claude
+├── main.py                 # CLI alternativo (legado)
+├── requirements.txt        # Flask, requests, psycopg, python-dotenv
 ├── .env.example
 ├── .gitignore
-└── README.md
+├── README.md
+├── static/
+│   ├── css/style.css       # Estilo + animações
+│   └── js/app.js           # SPA logic (vanilla JS)
+├── templates/
+│   └── index.html          # Tela única
+└── tests/
+    └── test_smoke.py
 ```
 
-### Decisões de arquitetura
+---
 
-- **Um único provedor (Claude pra tudo):** conversa, raciocínio e busca rodam pela API da Anthropic. Mais simples de gerenciar (uma chave, uma fatura).
-- **REST direto, sem SDKs:** evita pacotes pesados (pydantic_core) que podem ser bloqueados pelo Application Control do Windows. Só usa `requests`, `python-dotenv` e `psycopg[binary]`.
-- **Tool use híbrido:** combina a tool nativa server-side `web_search` com tools client-side (`validar_cep`, `consultar_frete`, `registrar_recomendacao`).
-- **Schema auto-criado:** `db.init_schema()` roda no startup; primeira execução cria as tabelas.
-- **Perfil injetado no system prompt:** o Claude recebe nome/CEP/nível + últimas 5 recomendações antes de cada turno, então não pergunta o que já sabe e pode comentar o histórico.
-- **Logging em camadas:** mensagens user/bot vão pra `mensagens`; toda recomendação final vira linha em `recomendacoes` via tool call.
-- **Falhas de DB não derrubam a conversa:** se algo der errado no log, a conversa continua (apenas registra o erro no modo --verbose).
+## Decisões de arquitetura
+
+- **REST direto sem SDK Anthropic** — evita dependências pesadas (pydantic_core) que podem ser bloqueadas pelo Application Control do Windows.
+- **Vanilla JS no frontend** — zero build, zero `node_modules`, recarrega na hora.
+- **PostgreSQL com schema auto-criado** — primeira execução cria as tabelas; sem necessidade de migrations.
+- **Tool use híbrido** — combina tool nativa server-side `web_search` da Anthropic com tools client-side (`validar_cep`, `consultar_frete`, `registrar_recomendacao`, carrinho).
+- **Validador de URL estrito** — rejeita URLs de listagem (`lista.`, `/c/`, `?q=`) e placeholders alucinados (`MLB-1234567890`, `MLB-XXX`).
+- **Busca multi-loja** — quando o ML não responde, ainda achamos produto em Amazon/Magalu/Centauro.
+- **Filtro de narrativa** — strip de "deixa eu", "vou tentar", "não consegui" do output do modelo pra entregar respostas limpas.
 
 ---
 
 ## Solução de problemas
 
-| Sintoma | Provável causa | O que fazer |
-|---------|----------------|-------------|
-| `DATABASE_URL não definido` | `.env` ausente ou sem a linha | Adicione `DATABASE_URL=...` no `.env`. |
-| `connection failed` / `password authentication failed` | senha errada na URL | Confira a senha do `postgres` no `.env`. |
-| `database "pescador" does not exist` | esqueceu de criar o banco | Rode `CREATE DATABASE pescador;` no psql. |
-| Serviço PostgreSQL não está rodando | desligaram o serviço | `services.msc` → `postgresql-x64-16` → Iniciar. |
-| `ANTHROPIC_API_KEY não definido` | `.env` sem a chave | Cole a chave no `.env`. |
-| `Erro de autenticação` (401/403) | chave inválida ou sem crédito | Confira em https://console.anthropic.com/settings/billing |
-| `429` no Claude | rate limit (raro) | Espere alguns segundos e reenvie. |
+| Sintoma | Causa provável | Solução |
+|---|---|---|
+| `ANTHROPIC_API_KEY não definido` | `.env` ausente | Crie o `.env` (veja **Instalação**) |
+| `Erro de autenticação` (401/403) | Chave inválida ou sem crédito | Verifique em https://console.anthropic.com/settings/billing |
+| `429` no Claude | Rate limit | Espere alguns segundos |
+| `Conexão recusada na porta 5432` | PostgreSQL fora do ar | Inicie o serviço PostgreSQL |
+| `database "pescador" does not exist` | Banco não criado | Rode `CREATE DATABASE pescador;` |
+| Bot retorna URL de busca | (não deve acontecer) | Atualize pra última versão — agora rejeita lista/categoria |
 
 ---
 
 ## Limitações conhecidas
 
-- O frete é uma **estimativa regional**. O valor exato sempre aparece no checkout do site da loja.
-- A busca depende do que o Google indexou — produtos muito recentes podem demorar a aparecer.
-- O histórico carregado pra contexto é só das últimas 5 recomendações (limitação proposital, pra não inflar o prompt).
+- Frete é uma **estimativa regional**. O valor real aparece no checkout da loja.
+- Cobertura depende do que o `web_search` da Anthropic indexa.
+- Bot funciona melhor em PT-BR; queries em inglês podem dar resultados estranhos.
+
+---
 
 Boa pescaria! 🎣
