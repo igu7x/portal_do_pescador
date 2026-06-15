@@ -30,8 +30,12 @@ CREATE TABLE IF NOT EXISTS usuarios (
     nome               VARCHAR(255) NOT NULL,
     cep                VARCHAR(8)   NOT NULL,
     nivel_experiencia  VARCHAR(20),
+    password_hash      TEXT,
     criado_em          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Migração: adiciona password_hash se a tabela já existia sem ele.
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS password_hash TEXT;
 
 CREATE TABLE IF NOT EXISTS conversas (
     id              SERIAL PRIMARY KEY,
@@ -141,20 +145,30 @@ def create_user(
     email: str,
     nome: str,
     cep: str,
+    password_hash: str,
     nivel_experiencia: str | None = None,
 ) -> dict[str, Any]:
     with _cursor() as cur:
         cur.execute(
             """
-            INSERT INTO usuarios (email, nome, cep, nivel_experiencia)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO usuarios (email, nome, cep, nivel_experiencia, password_hash)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING *
             """,
-            (email.strip().lower(), nome.strip(), cep, nivel_experiencia),
+            (email.strip().lower(), nome.strip(), cep, nivel_experiencia, password_hash),
         )
         row = cur.fetchone()
         assert row is not None
         return row
+
+
+def set_user_password(user_id: int, password_hash: str) -> None:
+    """Atualiza só a senha — usado quando usuário define senha numa conta legada."""
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE usuarios SET password_hash = %s WHERE id = %s",
+            (password_hash, user_id),
+        )
 
 
 def update_user_profile(

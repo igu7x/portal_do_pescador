@@ -30,161 +30,265 @@ from tools import TOOL_SCHEMAS, executar_tool
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-HTTP_TIMEOUT = 90
+HTTP_TIMEOUT = 60  # falha mais rápido se a API travar
 
 
-SYSTEM_PROMPT = """Você é o **Portal do Pescador**, um assistente brasileiro especialista em pesca esportiva e amadora. Sua missão é ajudar o usuário a encontrar o equipamento de pesca ideal pelo melhor custo-benefício, considerando perfil, modalidade e orçamento.
+SYSTEM_PROMPT = """Você é o **Portal do Pescador**, assistente brasileiro de pesca esportiva.
 
-## Tom e idioma
-- Sempre em **português brasileiro**, natural e amigável, como um vendedor experiente de loja de pesca conversando com cliente.
-- Use vocabulário do meio (vara, molinete, carretilha, chicote, anzol, sumiço, isca artificial, peso, chumbada, leader, pesqueiro, embarcado, etc.) sem ser pedante.
+## Estilo
+PT-BR natural, direto, amigável. Vocabulário de pesca sem pedantismo.
+**Respostas CURTAS.** Sem narrar ("deixa eu", "vou tentar", "não consegui"). Só responda.
 
-## Fluxo da conversa
-1. Cumprimente brevemente e explique em uma frase o que faz.
-2. Colete em ordem natural (UMA pergunta por vez, não dispare tudo junto):
-   - Nível de experiência: iniciante, intermediário ou avançado.
-   - Modalidade/objetivo: rio, mar, lago, represa, praia, embarcado, pesque-pague; espécie-alvo se mencionar (tilápia, traíra, dourado, robalo, pintado, tucunaré, atum...).
-   - Item desejado e especificações livres (vara, molinete, carretilha, linha, isca, anzol, kit, etc.).
-   - CEP para cálculo de frete (8 dígitos).
-   - Orçamento (opcional).
-3. Adapte ao perfil:
-   - Iniciante → equipamento versátil, fácil de manusear, montagem simples.
-   - Intermediário → produtos específicos, melhor custo-benefício.
-   - Avançado → marcas reconhecidas, especificações técnicas refinadas.
-   - Modalidade dita potência da vara, tamanho do molinete, gramatura da linha, isca.
+## Conversa antes da recomendação (UX)
 
-## Ferramentas disponíveis
+Quando o usuário pedir um produto pela primeira vez, faça **1 ou 2 perguntas curtas** pra construir o clima de conversa — NÃO precisa usar as respostas literalmente na busca, é só pra a experiência ficar gostosa:
 
-**Busca + endereço:**
-- **web_search** (server-side): busca produtos REAIS em sites brasileiros (Mercado Livre, Amazon, Magazine Luiza, Casas Bahia, Centauro, Decathlon, Pesca Gerais, Lojão da Pesca, Pesca Brasil). Faça queries específicas em PT-BR. Sempre inclua "comprar"/"preço"/"à venda" pra cair em página de produto, não artigo.
-- **web_fetch** (server-side): busca o conteúdo REAL da página de um produto. **OBRIGATÓRIO** usar pra confirmar o preço atual e a disponibilidade antes de recomendar (snippets de busca costumam ter preço sem desconto/promoção).
-- **validar_cep(cep)**: confirma cidade/UF do CEP.
-- **consultar_frete(cep, frete_gratis?)**: estimativa regional de frete.
+- "Vai pescar em água doce ou salgada?"
+- "Tem algum orçamento em mente, ou tanto faz?"
 
-**Banco de dados (persistência):**
-- **registrar_recomendacao(...)**: salva a recomendação final no histórico. Chame SEMPRE depois de apresentar a recomendação no formato padrão.
-- **adicionar_ao_carrinho(...)**: adiciona o produto ao carrinho persistente do usuário. Chame quando o usuário confirmar ("adiciona no carrinho", "pode pôr", "quero esse").
-- **visualizar_carrinho()**: retorna todos os itens + total geral. Chame quando o usuário pedir pra ver o carrinho ("meu carrinho", "o que tem no carrinho", "mostra o carrinho", etc.).
-- **remover_do_carrinho(item_id)**: remove um item pelo ID (que vem de visualizar_carrinho).
-- **limpar_carrinho()**: esvazia tudo. Confirme antes de chamar.
+Faça **NO MÁXIMO 2 perguntas** antes de buscar. Se o usuário responder vago tipo "tanto faz", "qualquer", "em conta" — **vá direto pra busca**, não pergunte de novo.
 
-## Fluxo da busca — REGRA CRÍTICA
+CEP e nível já estão cadastrados — não pergunte essas duas coisas.
 
-O usuário só pode receber recomendações de produtos **disponíveis para compra AGORA** com o **preço REAL atual** (incluindo promoções/descontos vigentes). Pra garantir isso:
+## Ferramentas
+- **buscar_produto(query, preco_max?)**: TOOL PRINCIPAL pra produtos. Retorna nome, preço, URL ESPECÍFICA do produto. **USE ESTA SEMPRE.**
+- **consultar_frete**: frete pro CEP.
+- **registrar_recomendacao**: SEMPRE chame após apresentar.
+- **adicionar/visualizar/remover/limpar carrinho**.
 
-1. Faça **1-2 buscas** no `web_search` com termos variados (ex: "vara telescópica carbono comprar Mercado Livre", "vara telescópica carbono Amazon Brasil").
-2. **Descarte imediatamente** qualquer resultado em que o snippet mencione: "vendido", "esgotado", "sem estoque", "indisponível", ou que pareça página de busca/categoria (URL com /search, /busca, /pesquisa, /categoria, /c/).
-3. Identifique 2-3 candidatos promissores pelo perfil.
-4. **OBRIGATÓRIO:** pra CADA candidato, chame `web_fetch` na URL exata do produto e aplique o **CHECKLIST DE DISPONIBILIDADE** abaixo.
-5. Pra cada candidato APROVADO no checklist, chame `consultar_frete`.
-6. Calcule **total = preço (do web_fetch) + frete** e escolha o melhor pro perfil pelo menor total.
-7. Se NENHUM candidato passar pelo checklist, faça mais 1 busca com termos diferentes e tente outros. Só desista depois de tentar 4-5 produtos.
+## 🎯 FLUXO
 
-## ✅ CHECKLIST DE DISPONIBILIDADE (use após cada `web_fetch`)
+Quando o usuário pede produto:
 
-A página é APROVADA se TODAS as condições forem verdadeiras:
+1. **Chame `buscar_produto(query, preco_max)`** com termos diretos.
+2. Se `sucesso=true`: **RECOMENDA NA HORA** no formato abaixo (use os dados retornados).
+3. Chame `consultar_frete(cep, frete_gratis)` em paralelo com `registrar_recomendacao`.
 
-✅ Tem **preço visível** em reais na página (não só "consulte", "indisponível")
-✅ Tem **botão de compra ativo** ("Comprar agora", "Adicionar ao carrinho", "Comprar", "Add to cart")
-✅ **NÃO contém** nenhuma destas frases (caso-sensitive: variantes maiúsculas/minúsculas contam):
+Se `buscar_produto` retornar `sucesso=false`:
+- Tenta UMA vez com query diferente/mais simples.
+- Se ainda falhar, diga: "Não achei um produto específico pra essa busca agora. Pode tentar outro item ou ajustar?"
 
-   **Mercado Livre:**
-   - "Este produto está indisponível"
-   - "escolha outra variação"
-   - "Anúncio pausado"
-   - "Anúncio finalizado"
-   - "Não temos esse produto"
+**NUNCA invente URL.** Use SOMENTE o que `buscar_produto` retorna.
+**NUNCA use web_search direto** — só use buscar_produto pra produtos.
 
-   **Amazon:**
-   - "Currently unavailable"
-   - "Atualmente sem estoque"
-   - "Esgotado no momento"
-
-   **Genérico (qualquer loja):**
-   - "Indisponível"
-   - "Sem estoque"
-   - "Esgotado"
-   - "Produto encerrado"
-   - "Out of stock"
-
-Se QUALQUER uma dessas frases aparecer na página → DESCARTA o produto, mesmo que tenha preço visível, mesmo que tenha "+25 vendidos", mesmo que tenha estrelas/avaliações. **Indisponível é indisponível.**
-
-## 🧠 Checklist mental antes de chamar `registrar_recomendacao` / `adicionar_ao_carrinho`
-
-Pergunte a si mesmo:
-1. Eu acabei de fazer `web_fetch` neste URL exato? → se não, **NÃO recomende ainda**, faça o fetch primeiro.
-2. A página passou pelo checklist de disponibilidade acima? → se não, **descarta e tenta outro**.
-3. O preço que vou citar veio do `web_fetch` (não do snippet)? → se não, **corrige antes**.
-4. O link é a URL canônica do produto (não busca/redirect)? → se não, **acha o link real**.
-
-Só prossegue se as 4 respostas forem SIM.
-
-⚠️ **NUNCA confie no preço do snippet do `web_search`** — sempre use o do `web_fetch`.
-⚠️ **NUNCA recomende algo sem ter feito `web_fetch` daquela URL nesta conversa.**
-
-## Formato OBRIGATÓRIO da recomendação
+## Formato da recomendação
 
 ```
-🎣 Minha recomendação:
+🎣 Recomendação:
 
-**[Nome exato do produto]**
+**[Nome do produto]**
 - 💰 Preço: R$ XX,XX
-- 🚚 Frete: R$ XX,XX (estimativa) — ou: Grátis
+- 🚚 Frete: R$ XX,XX — ou: Grátis
 - 🧮 **Total: R$ XX,XX**
-- 🏪 Loja: [nome do site]
-- 🔗 Link: [URL CANÔNICA direta da página do produto]
+- 🏪 Loja: [site]
+- 🔗 [URL ESPECÍFICA do produto]
 
-ℹ️ Frete estimado por região; valor exato aparece no checkout.
-
-Por que escolhi: [1-2 frases conectando ao perfil do usuário]
+[1 frase curta sobre por que serve]
 ```
 
-Depois de mostrar:
-1. Chame `registrar_recomendacao` com os mesmos dados.
-2. Pergunte: **"Quer adicionar ao carrinho?"** (e ofereça também: ver alternativas, refinar, ou finalizar).
-3. Se o usuário disser sim/positivo, chame `adicionar_ao_carrinho` com os mesmos dados e confirme ("Beleza, adicionei!").
+Depois: chame `registrar_recomendacao` + "Quer adicionar ao carrinho?".
+Sim → `adicionar_ao_carrinho` + "Adicionei! 🛒".
 
-## Fluxo do carrinho
+## Carrinho
 
-- Quando o usuário pedir pra ver o carrinho → chame `visualizar_carrinho` e apresente assim:
-
+"meu carrinho" → `visualizar_carrinho`:
 ```
 🛒 Seu carrinho:
-
-1. [Nome do produto 1]
-   - Preço: R$ XX,XX  |  Frete: R$ XX,XX  |  Total: R$ XX,XX
-   - Loja: [loja]
-   - 🔗 [link]
-
-2. [Nome do produto 2]
-   ...
-
-────────────────────────────
-TOTAL GERAL: R$ XXX,XX
-(Subtotal produtos: R$ XX,XX  +  Fretes: R$ XX,XX)
+1. [Nome] — R$ XX ([loja]) 🔗 [link]
+─────────────
+TOTAL: R$ XXX
 ```
 
-- Pra remover, peça pra indicar qual item (por número da lista ou nome) e chame `remover_do_carrinho` com o `id` correspondente.
-- Pra esvaziar, sempre confirme antes ("Tem certeza? Vai apagar tudo.") e só depois chame `limpar_carrinho`.
-
-## Refinamentos
-- "mais barato" → busque novamente com "barato", "promoção", "oferta".
-- "frete grátis" → busque por produtos com frete grátis explícito; passe `frete_gratis=true`.
-- "outra marca" → ajuste a query (Marine Sports, Pesca Brasil, Daiwa, Shimano, Albatroz, etc.).
-- "outra modalidade" → reabra a coleta pro novo objetivo.
-
-## REGRAS CRÍTICAS — NUNCA QUEBRE
-
-- **NUNCA invente** nome de produto, preço, loja ou URL. Tudo vem do web_search + web_fetch real.
-- **O LINK deve ser a URL canônica do produto** (ex: `https://produto.mercadolivre.com.br/MLB-...`), não link de busca/redirect/encurtado.
-- **NUNCA confie no preço do snippet** — sempre use o preço extraído via `web_fetch` da página real.
-- **NUNCA recomende produto indisponível.** Se o `web_fetch` mostrar "sem estoque"/"indisponível"/"anúncio pausado", descarte e tente outro.
-- **Use o CEP cadastrado**, não pergunte de novo.
-- **Não exponha** IDs internos, nomes de tools, ou mensagens de erro técnicas.
-
-## Encerramento
-Se o usuário disser tchau / valeu / encerrar / sair / obrigado é só → despeça-se brevemente desejando boa pescaria. Não force venda.
+## REGRAS DURAS
+- **URL DEVE SER ESPECÍFICA** do produto. NUNCA `lista.mercadolivre`, `/c/`, `?q=`.
+- **NUNCA invente** dados que não vieram da busca.
+- **Sem narração**: tools são silenciosas. Sem "deixa eu", "vou".
+- Saída ("tchau"/"sair") → "Boa pescaria! 🎣".
 """
+
+
+def eh_link_de_produto(url: str) -> bool:
+    """
+    Aceita só URLs ESPECÍFICAS de produto (não lista, não categoria).
+    Marketplaces grandes: exige identificador (MLB-, /dp/, /p/).
+    Lojas pequenas: aceita qualquer URL real (vai pra página específica).
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    u = url.lower()
+    # Rejeita listagens, categorias, buscas
+    if any(s in u for s in (
+        "lista.mercadolivre", "lista.mercadolibre", "listado.mercadolibre",
+        "mercadolivre.com.br/c/", "mercadolibre.com.br/c/",
+        "amazon.com.br/s?", "amazon.com.br/s/",
+        "amazon.com.br/b?",
+        "/search?", "/busca?",
+        "?q=", "&q=", "?keyword=",
+        "google.com/search", "bing.com/search", "duckduckgo.com",
+    )):
+        return False
+    # Rejeita placeholders alucinados
+    if any(p in u for p in (
+        "mlb-1234567890", "mlb-xxx", "mlb-xxxxx",
+        "/dp/xxxxxxxxxx", "/dp/xxx", "/p/xxxxx", "example.com",
+    )):
+        return False
+    # Marketplace grande → exige identificador
+    marketplaces = (
+        "mercadolivre.com.br", "mercadolibre.com.br",
+        "amazon.com.br", "magazineluiza.com.br", "magazinevoce.com.br",
+        "casasbahia.com.br", "centauro.com.br", "decathlon.com.br",
+        "shopee.com.br",
+    )
+    eh_marketplace = any(m in u for m in marketplaces)
+    if eh_marketplace:
+        return any(s in u for s in (
+            "mlb-", "/dp/", "/gp/product/", "/p/", "/produto/", "/produtos/",
+        ))
+    # Loja pequena → aceita
+    return True
+
+
+def _parse_money_brl(s: str | None) -> float:
+    """Converte 'R$ 1.199,90' / 'R$ 119,90' / '119,90' / '119.90' → float."""
+    if not s:
+        return 0.0
+    m = re.search(r"(\d{1,3}(?:[.\s]\d{3})*(?:[,\.]\d{2})?|\d+(?:[,\.]\d{2})?)", s)
+    if not m:
+        return 0.0
+    raw = m.group(1).replace(" ", "").replace(".", "").replace(",", ".")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def extrair_recomendacao_do_texto(texto: str) -> dict | None:
+    """
+    Lê o texto da resposta do bot e tenta extrair os campos do produto
+    quando ele formatou uma recomendação mas não chamou registrar_recomendacao.
+
+    Retorna dict com {nome_produto, preco, frete, total, loja, link} ou None.
+    """
+    if not texto:
+        return None
+    # Tem que ter o header de recomendação
+    if not re.search(r"🎣\s*Recomenda", texto, re.IGNORECASE) and \
+       not re.search(r"recomenda[çc][ãa]o", texto, re.IGNORECASE):
+        return None
+
+    # Nome: primeiro **algo** com 5+ caracteres
+    m_nome = re.search(r"\*\*([^*\n]{5,200})\*\*", texto)
+    if not m_nome:
+        return None
+    nome = m_nome.group(1).strip()
+    # Se for "Total: R$..." pula e busca de novo
+    if nome.lower().startswith(("total", "preço", "preco", "frete")):
+        # Tenta nas linhas seguintes — pega o próximo bold
+        matches = re.findall(r"\*\*([^*\n]{5,200})\*\*", texto)
+        nome = next((m.strip() for m in matches
+                     if not m.lower().startswith(("total", "preço", "preco", "frete"))),
+                    nome)
+
+    # Preço, frete, total
+    m_preco = re.search(r"Pre[çc]o[:\s]*([^\n]+)", texto, re.IGNORECASE)
+    m_frete = re.search(r"Frete[:\s]*([^\n]+)", texto, re.IGNORECASE)
+    m_total = re.search(r"Total(?:\s+estimado)?[:\s\*]*([^\n*]+)", texto, re.IGNORECASE)
+
+    preco = _parse_money_brl(m_preco.group(1) if m_preco else None)
+    frete_str = (m_frete.group(1).lower() if m_frete else "")
+    if any(w in frete_str for w in ("grátis", "gratis", "grátis!", "free", "0,00", "0.00")):
+        frete = 0.0
+    else:
+        frete = _parse_money_brl(m_frete.group(1) if m_frete else None)
+    total = _parse_money_brl(m_total.group(1) if m_total else None) or (preco + frete)
+
+    # Link: PRIMEIRO https?:// que pareça ser de produto (não busca/lista)
+    link = ""
+    for m in re.finditer(r"https?://[^\s<>()\[\]]+", texto):
+        candidato = re.sub(r"[.,;:!?)\]]+$", "", m.group(0)).strip()
+        if eh_link_de_produto(candidato):
+            link = candidato
+            break
+    if not link:
+        # Não achou link válido de produto → não considera recomendação
+        return None
+
+    # Loja: aceita "Loja: X", "🏪 X", ou infere pelo domínio do link
+    loja = ""
+    m_loja = re.search(r"(?:Loja[:\s]+|🏪\s*)([^\n]+)", texto, re.IGNORECASE)
+    if m_loja:
+        loja = re.sub(r"[\*🏪🛍🏬]+", "", m_loja.group(1)).strip()
+    if not loja and link:
+        dominio = re.sub(r"^https?://(www\.|produto\.)?", "", link).split("/")[0].lower()
+        loja = {
+            "mercadolivre.com.br": "Mercado Livre",
+            "amazon.com.br": "Amazon",
+            "magazineluiza.com.br": "Magazine Luiza",
+            "magazinevoce.com.br": "Magazine Luiza",
+            "casasbahia.com.br": "Casas Bahia",
+            "centauro.com.br": "Centauro",
+            "decathlon.com.br": "Decathlon",
+            "pescagerais.com.br": "Pesca Gerais",
+            "pescabrasil.com.br": "Pesca Brasil",
+            "lojaodapesca.com.br": "Lojão da Pesca",
+            "shopee.com.br": "Shopee",
+        }.get(dominio, dominio.split(".")[0].capitalize())
+
+    if not nome or not link or preco <= 0:
+        return None
+
+    return {
+        "nome_produto": nome,
+        "preco": round(preco, 2),
+        "frete": round(frete, 2),
+        "total": round(total, 2) if total > 0 else round(preco + frete, 2),
+        "loja": loja or "—",
+        "link": link,
+    }
+
+
+def verificar_link_acessivel(url: str, timeout: int = 6) -> tuple[bool, str]:
+    """
+    Verifica se uma URL de produto está acessível (não 404, não fora do ar).
+
+    Retorna (ok, motivo). ok=True significa que o link parece estar funcionando.
+    Aceita 2xx, 3xx, e 403 (anti-bot detection em ML/Amazon não significa link quebrado).
+    Rejeita 404, 410, 5xx e timeouts/erros de rede.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return False, "URL inválida"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    }
+    try:
+        # Tenta HEAD primeiro (mais rápido)
+        resp = requests.head(url, headers=headers, timeout=timeout, allow_redirects=True)
+        if resp.status_code == 405:  # Method Not Allowed → tenta GET
+            resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True, stream=True)
+            resp.close()
+    except requests.RequestException as exc:
+        return False, f"erro de rede: {exc.__class__.__name__}"
+
+    status = resp.status_code
+    if 200 <= status < 300:
+        return True, "ok"
+    if 300 <= status < 400:
+        return True, f"redirect ({status})"
+    if status == 403:
+        # Anti-bot detection. Link tipicamente válido pra humanos.
+        return True, "403 (anti-bot, mas link humano funciona)"
+    if status in (404, 410):
+        return False, f"página não existe ({status})"
+    if 500 <= status < 600:
+        return False, f"servidor com erro ({status})"
+    return False, f"status inesperado ({status})"
 
 
 def _extrair_retry_after(resp: requests.Response) -> float | None:
@@ -217,7 +321,7 @@ class PortalDoPescadorBot:
         cart_summary: dict[str, Any] | None = None,
         api_key: str | None = None,
         model: str | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
         verbose_tools: bool = False,
     ) -> None:
         chave = api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -235,6 +339,9 @@ class PortalDoPescadorBot:
         self.tools_payload = self._construir_tools_anthropic()
         self.history: list[dict[str, Any]] = []
         self.system_prompt = self._construir_system_prompt()
+        # Última recomendação registrada pelo bot no turno corrente — usada
+        # pela UI pra mostrar o botão "Adicionar ao carrinho".
+        self.last_recommendation: dict[str, Any] | None = None
 
     @staticmethod
     def _construir_tools_anthropic() -> list[dict[str, Any]]:
@@ -259,15 +366,11 @@ class PortalDoPescadorBot:
                 "country": "BR",
             },
         }
-        # web_fetch: busca o conteúdo real da página de um produto pra
-        # confirmar o preço ATUAL (com promoção/desconto) e disponibilidade,
-        # em vez de confiar no snippet desatualizado da busca.
-        # max_uses=5 permite testar até 5 candidatos quando alguns falham.
         web_fetch_tool = {
             "type": "web_fetch_20250910",
             "name": "web_fetch",
-            "max_uses": 5,
-            "max_content_tokens": 8000,
+            "max_uses": 3,
+            "max_content_tokens": 5000,
         }
         # cache_control no último item: cacheia toda a lista de tools
         tools_list = [web_search_tool, web_fetch_tool, *client_side]
@@ -308,7 +411,7 @@ class PortalDoPescadorBot:
 
 ## Perfil do usuário desta sessão
 - Nome: **{nome}** — chame ele assim, com naturalidade.
-- CEP: {cep} — use este CEP em consultar_frete sem precisar perguntar de novo.
+- CEP cadastrado: {cep} — **USO INTERNO APENAS**. Passe este valor em `consultar_frete`, mas **NUNCA mencione o CEP nem a cidade/UF derivada dele na conversa** (você não tem como saber a cidade certa só pelo CEP, e mencionar pode confundir o usuário com info errada).
 - Nível de experiência: **{nivel}** — adapte recomendações a isso.
 
 ## Carrinho atual
@@ -317,7 +420,7 @@ class PortalDoPescadorBot:
 ## Histórico de recomendações já feitas a {nome}
 {historico}
 
-⚠️  Como o nome, CEP e nível já estão cadastrados, **não pergunte essas coisas de novo**. Cumprimente {nome} pelo nome e vá direto pra entender o que ele procura nesta conversa.
+⚠️  Cumprimente {nome} pelo nome e vá direto pra entender o que ele procura. **NÃO mencione CEP, cidade ou estado** na abertura nem em nenhum outro momento. NÃO pergunte CEP/nível/nome (já cadastrados).
 """
         return SYSTEM_PROMPT + bloco_perfil
 
@@ -333,8 +436,51 @@ class PortalDoPescadorBot:
                 if self.verbose_tools:
                     print(f"  [db] Falha ao logar mensagem do usuário: {exc}")
 
+        # Reseta a "última recomendação do turno" — só será preenchida se
+        # o bot chamar registrar_recomendacao neste turno.
+        self.last_recommendation = None
+
         self.history.append({"role": "user", "content": mensagem_usuario})
         resposta = self._loop_ate_resposta_final()
+
+        # Limpa narrativa ("deixa eu tentar...", "vou buscar...") do texto
+        resposta = self._limpar_narrativa(resposta)
+
+        # Se a resposta final é mensagem de erro/fallback, mas o bot acabou
+        # setando last_recommendation antes, descarta — botão sem contexto não
+        # faz sentido.
+        if self.last_recommendation is not None and self._resposta_eh_fallback(resposta):
+            self.last_recommendation = None
+
+        # Se tem URL inválida na recomendação que o bot mandou, descarta
+        # last_recommendation pra não mostrar botão de link ruim.
+        if self.last_recommendation is not None:
+            link_atual = (self.last_recommendation.get("link") or "").strip()
+            if not eh_link_de_produto(link_atual):
+                self.last_recommendation = None
+
+        # FALLBACK: se o bot escreveu uma recomendação no texto mas não chamou
+        # registrar_recomendacao, a gente extrai os dados do texto e salva.
+        if self.last_recommendation is None and not self._resposta_eh_fallback(resposta):
+            extraido = extrair_recomendacao_do_texto(resposta)
+            if extraido:
+                if self.verbose_tools:
+                    print(f"  [bot] recuperou recomendação do texto: {extraido['nome_produto']!r}")
+                self.last_recommendation = extraido
+                try:
+                    db.log_recommendation(
+                        user_id=int(self.user_profile["id"]),
+                        conversation_id=self.conversation_id,
+                        nome_produto=extraido["nome_produto"],
+                        preco=extraido["preco"],
+                        frete=extraido["frete"],
+                        total=extraido["total"],
+                        loja=extraido["loja"],
+                        link=extraido["link"],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    if self.verbose_tools:
+                        print(f"  [bot] falha ao persistir extração: {exc}")
 
         try:
             db.log_message(self.conversation_id, "bot", resposta)
@@ -344,8 +490,116 @@ class PortalDoPescadorBot:
 
         return resposta
 
+    @staticmethod
+    def _resposta_eh_fallback(texto: str) -> bool:
+        """Detecta mensagens de erro/recovery — sem produto pra mostrar."""
+        if not texto:
+            return True
+        t = texto.strip().lower()
+        marcadores = (
+            "desculpa, não consegui",
+            "desculpa, fiquei pensando demais",
+            "(sem resposta)",
+            "(resposta truncada",
+            "rate limit",
+            "servidores",
+        )
+        return any(m in t for m in marcadores)
+
+    @staticmethod
+    def _eh_admissao_de_falha(texto: str) -> bool:
+        """
+        Detecta quando o bot tá admitindo derrota sem dar um produto real
+        (sinais clássicos de 'pensando em voz alta' e desistência).
+        """
+        if not texto:
+            return False
+        t = texto.lower()
+        sinais = (
+            "tô tendo dificuldade",
+            "to tendo dificuldade",
+            "estou tendo dificuldade",
+            "tava buscando os melhores",
+            "deixa eu tentar uma busca diferente",
+            "não consegui pegar os link",
+            "nao consegui pegar os link",
+            "ainda preso",
+            "preso em urls",
+            "quer que eu continue ou prefere",
+            "quer que eu busque novamente",
+            "deixa eu tentar de novo",
+        )
+        return any(s in t for s in sinais)
+
+    @staticmethod
+    def _limpar_narrativa(texto: str) -> str:
+        """
+        Remove linhas em que o bot 'pensa em voz alta' em vez de responder
+        (proibidas explicitamente no system prompt mas o Haiku ainda escapa).
+        """
+        if not texto:
+            return texto
+        padroes_remover = (
+            # "deixa eu" + verbos de ação técnica
+            r"^\s*deixa eu (buscar|tentar|verificar|fazer|pegar|achar|olhar|conferir|checar|entrar|extrair|puxar|filtrar|navegar)",
+            # "vou" + verbos
+            r"^\s*vou (tentar|buscar|entrar|pegar|achar|extrair|fazer fetch|navegar|olhar)",
+            # narrativa de progresso
+            r"^\s*(tava buscando|t[ôo] tentando|estou tentando|t[ôo] buscando|estou buscando)",
+            r"^\s*(ainda preso|ainda tem urls?|ainda tem url|bom,?\s*ainda|[óo]timo!?\s*achei urls?)",
+            r"^\s*(os resultados (est[ãa]o|s[ãa]o) (muito )?gen[ée]rico|os resultados (s[ãa]o|est[ãa]o) (urls?|p[áa]ginas))",
+            r"^\s*(perfeito!\s*deixa|certo,?\s*deixa|opa!?\s*deixa)",
+            r"^\s*preciso de mais (uma|umas) busca",
+            # admissões de falha (queremos que ele entregue, não desista)
+            r"^\s*(infelizmente )?n[ãa]o consigo acess",
+            r"^\s*n[ãa]o consegui acess",
+            r"^\s*os resultados mostram (s[óo] )?p[áa]ginas",
+            r"^\s*n[ãa]o achei (um )?link direto",
+            r"^\s*deixa a gente fazer diferente",
+            r"^\s*beleza!?\s*deixa eu",
+            r"^\s*beleza!?\s*vou",
+            r"^\s*preciso de um link",
+            r"^\s*achei v[áa]rias op[çc][õo]es",
+        )
+        linhas = texto.split("\n")
+        filtradas = [
+            l for l in linhas
+            if not any(re.match(p, l, re.IGNORECASE) for p in padroes_remover)
+        ]
+        # Junta mas remove triplas quebras
+        resultado = "\n".join(filtradas).strip()
+        resultado = re.sub(r"\n{3,}", "\n\n", resultado)
+        return resultado
+
+    @staticmethod
+    def _tem_url_invalida_em_recomendacao(texto: str) -> bool:
+        """
+        True se o texto parece uma recomendação MAS contém uma URL inválida
+        (página de busca/lista/categoria em vez do produto).
+        """
+        if not texto:
+            return False
+        # Tem que parecer recomendação (tem header ou estrutura típica)
+        baixo = texto.lower()
+        if "recomenda" not in baixo and "🎣" not in texto:
+            return False
+        # Procura URLs e testa cada uma
+        for m in re.finditer(r"https?://[^\s<>()\[\]]+", texto):
+            url = re.sub(r"[.,;:!?)\]]+$", "", m.group(0)).strip()
+            if not eh_link_de_produto(url):
+                return True
+        return False
+
     def reset(self) -> None:
         self.history.clear()
+
+    def update_user_profile(self, user_profile: dict[str, Any]) -> None:
+        """
+        Atualiza o perfil do usuário em memória e reconstrói o system prompt
+        — usado quando o usuário muda CEP/nível pelo modal de perfil.
+        """
+        self.user_profile = user_profile
+        self.system_prompt = self._construir_system_prompt()
 
     # ------------------------------------------------------------------ #
     # Dispatch de tools (injeta contexto pra registrar_recomendacao)      #
@@ -356,16 +610,39 @@ class PortalDoPescadorBot:
 
         if nome == "registrar_recomendacao":
             try:
+                nome_produto = str(params.get("nome_produto", "")).strip()
+                preco = float(params.get("preco", 0))
+                frete = float(params.get("frete", 0))
+                total = float(params.get("total", 0))
+                loja = str(params.get("loja", "")).strip()
+                link = str(params.get("link", "")).strip()
+
+                # Só rejeita URLs claramente de busca com query string
+                if not eh_link_de_produto(link):
+                    return {
+                        "sucesso": False,
+                        "erro": "Link parece ser uma busca com query string. Use a URL da página em si.",
+                    }
+
                 rec_id = db.log_recommendation(
                     user_id=user_id,
                     conversation_id=self.conversation_id,
-                    nome_produto=str(params.get("nome_produto", "")).strip(),
-                    preco=float(params.get("preco", 0)),
-                    frete=float(params.get("frete", 0)),
-                    total=float(params.get("total", 0)),
-                    loja=str(params.get("loja", "")).strip(),
-                    link=str(params.get("link", "")).strip(),
+                    nome_produto=nome_produto,
+                    preco=preco,
+                    frete=frete,
+                    total=total,
+                    loja=loja,
+                    link=link,
                 )
+                # Guarda pra UI exibir botão "Adicionar ao carrinho"
+                self.last_recommendation = {
+                    "nome_produto": nome_produto,
+                    "preco": preco,
+                    "frete": frete,
+                    "total": total,
+                    "loja": loja,
+                    "link": link,
+                }
                 return {"sucesso": True, "id": rec_id, "mensagem": "Recomendação salva no histórico."}
             except Exception as exc:  # noqa: BLE001
                 return {"sucesso": False, "erro": f"Falha ao salvar: {exc}"}
@@ -466,16 +743,17 @@ class PortalDoPescadorBot:
             }
 
             # Retry com backoff para 429 / 5xx (rate limit / sobrecarga).
+            # Tempos curtos: se travar, o usuário não fica esperando minutos.
             resp = None
             ultimo_erro = ""
-            for tentativa in range(4):
+            for tentativa in range(3):
                 try:
                     resp = requests.post(
                         ANTHROPIC_API_URL, headers=headers, json=payload, timeout=HTTP_TIMEOUT
                     )
                 except requests.RequestException as exc:
                     ultimo_erro = f"Falha de rede: {exc}"
-                    time.sleep(min(2 ** tentativa, 30))
+                    time.sleep(min(2 ** tentativa, 8))
                     continue
 
                 if resp.status_code == 200:
@@ -483,20 +761,15 @@ class PortalDoPescadorBot:
 
                 if resp.status_code == 429:
                     delay_servidor = _extrair_retry_after(resp)
-                    espera = delay_servidor if delay_servidor else (5 + 10 * tentativa)
-                    espera = min(espera, 60)
-                    ultimo_erro = (
-                        f"Anthropic API erro 429 (rate limit). "
-                        f"Esperei {espera:.0f}s antes do retry."
-                    )
+                    espera = delay_servidor if delay_servidor else (4 + 6 * tentativa)
+                    espera = min(espera, 20)  # cap em 20s pra não congelar a UX
+                    ultimo_erro = f"Anthropic API erro 429 (rate limit)"
                     time.sleep(espera)
                     continue
 
                 if resp.status_code in (500, 502, 503, 504, 529):
-                    ultimo_erro = (
-                        f"Anthropic API erro {resp.status_code} (sobrecarga temporária)"
-                    )
-                    time.sleep(min(2 ** tentativa + 1, 30))
+                    ultimo_erro = f"Anthropic API erro {resp.status_code} (sobrecarga)"
+                    time.sleep(min(2 ** tentativa + 1, 10))
                     continue
 
                 # erro permanente
@@ -519,17 +792,52 @@ class PortalDoPescadorBot:
 
             # pause_turn: o modelo está no meio de uma sequência de
             # ferramentas server-side (ex: web_search) e precisa continuar.
-            # Basta fazer outra chamada com o histórico atual — sem appendar
-            # tool_result, sem mudar nada.
             if stop_reason == "pause_turn":
                 continue
 
+            # max_tokens: a resposta foi truncada. Pede pra ele finalizar
+            # de forma concisa, em vez de retornar resposta vazia/cortada.
+            if stop_reason == "max_tokens":
+                texto_parcial = "\n".join(
+                    b.get("text", "") for b in blocos if b.get("type") == "text"
+                ).strip()
+                if texto_parcial:
+                    # Tem texto parcial — usa ele e adiciona um aviso
+                    return texto_parcial + "\n\n(resposta truncada — me peça pra continuar)"
+                # Sem texto: tenta continuar pedindo um resumo
+                self.history.append({
+                    "role": "user",
+                    "content": "Sua resposta foi cortada. Resuma o que você achou em até 8 linhas, no formato padrão de recomendação se já tem produto, ou faça uma pergunta curta se ainda precisa de info.",
+                })
+                continue
+
             if stop_reason != "tool_use":
-                # resposta final em texto
+                # resposta final
                 texto = "\n".join(
                     b.get("text", "") for b in blocos if b.get("type") == "text"
                 ).strip()
-                return texto or "(sem resposta)"
+                if texto:
+                    return texto
+
+                # Sem texto: tenta entender o porquê e recuperar
+                tem_server_tool = any(
+                    b.get("type") in ("server_tool_use", "web_search_tool_result", "web_fetch_tool_result")
+                    for b in blocos
+                )
+                if tem_server_tool:
+                    # Modelo usou web_search/web_fetch mas não escreveu texto.
+                    # Força ele a responder usando o que coletou.
+                    self.history.append({
+                        "role": "user",
+                        "content": "Você fez buscas mas não me respondeu. Me dê agora uma resposta curta com base no que encontrou — ou se nada serviu, me pergunte algo pra refinar.",
+                    })
+                    continue
+
+                # Sem texto e sem tools — provavelmente bloqueio de safety
+                return (
+                    "Desculpa, não consegui formular uma resposta dessa vez. "
+                    "Pode reformular ou ser mais específico no que está procurando?"
+                )
 
             # Executa cada tool_use deste turno e devolve os resultados
             tool_results: list[dict[str, Any]] = []

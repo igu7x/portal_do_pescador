@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portal do Pescador — seu copiloto de equipamento de pesca</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%A3%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+  <!-- =================== FUNDO DECORATIVO (oceano + cardume) =================== -->
+  <div class="ocean-bg" aria-hidden="true">
+
+    <!-- Aurora aquática (puxada pro azul) -->
+    <div class="aurora">
+      <span class="blob blob-sky"></span>
+      <span class="blob blob-teal"></span>
+      <span class="blob blob-deep"></span>
+      <span class="blob blob-cyan"></span>
+      <span class="blob blob-coral-touch"></span>
+    </div>
+
+    <!-- Grão sutil -->
+    <div class="grain"></div>
+
+    <!-- Definições de peixes (reutilizáveis) -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <!-- Tropical (corpo redondo, nadadeiras topo/baixo) -->
+        <symbol id="fish-tropical" viewBox="0 0 130 65">
+          <ellipse cx="50" cy="32" rx="38" ry="22" fill="currentColor"/>
+          <path d="M40,12 Q50,2 60,12 L57,18 L43,18 Z" fill="currentColor"/>
+          <path d="M40,52 Q50,62 60,52 L57,46 L43,46 Z" fill="currentColor"/>
+          <path d="M85,28 L122,12 Q126,32 122,52 L85,36 Z" fill="currentColor"/>
+          <circle cx="30" cy="28" r="3" fill="rgba(255,255,255,0.85)"/>
+          <circle cx="31" cy="28" r="1.4" fill="#0a1f3a"/>
+        </symbol>
+
+        <!-- Slim (corpo alongado, tipo marlin/atum) -->
+        <symbol id="fish-slim" viewBox="0 0 130 50">
+          <path d="M12,25 Q42,4 82,22 Q90,25 82,28 Q42,46 12,25 Z" fill="currentColor"/>
+          <path d="M82,22 L122,8 L116,25 L122,42 L82,28 Z" fill="currentColor"/>
+          <path d="M55,16 Q60,8 68,12 L66,18 L58,18 Z" fill="currentColor"/>
+          <circle cx="38" cy="22" r="2.5" fill="rgba(255,255,255,0.85)"/>
+          <circle cx="39" cy="22" r="1.2" fill="#0a1f3a"/>
+        </symbol>
+
+        <!-- Koi (corpo oval com padrão sutil de listras) -->
+        <symbol id="fish-koi" viewBox="0 0 130 60">
+          <path d="M15,30 C 18,16 38,10 62,12 Q 85,15 86,30 Q 85,45 62,48 C 38,50 18,44 15,30 Z" fill="currentColor"/>
+          <path d="M86,30 Q 102,14 122,16 Q 108,30 122,44 Q 102,46 86,30 Z" fill="currentColor"/>
+          <path d="M42,12 Q52,3 62,12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <path d="M40,20 Q42,30 40,40" stroke="rgba(255,255,255,0.35)" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+          <path d="M55,18 Q57,30 55,42" stroke="rgba(255,255,255,0.35)" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+          <path d="M70,20 Q72,30 70,40" stroke="rgba(255,255,255,0.35)" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+          <circle cx="32" cy="26" r="3" fill="rgba(255,255,255,0.9)"/>
+          <circle cx="33" cy="26" r="1.4" fill="#0a1f3a"/>
+        </symbol>
+      </defs>
+    </svg>
+
+    <!-- Cardume — 3 camadas de profundidade -->
+    <div class="school">
+      <!-- Camada PRÓXIMA (foreground): grande, mais visível, mais rápida -->
+      <div class="swim swim-1"><div class="wiggle"><svg class="fish-svg" viewBox="0 0 130 65"><use href="#fish-tropical"/></svg></div></div>
+      <div class="swim swim-2"><div class="wiggle"><svg class="fish-svg" viewBox="0 0 130 60"><use href="#fish-koi"/></svg></div></div>
+
+      <!-- Camada MÉDIA -->
+      <div class="swim swim-3"><div class="wiggle"><svg class="fish-svg" viewBox="0 0 130 50"><use href="#fish-slim"/></svg></div></div>
+      <div class="swim swim-4"><div class="wiggle"><svg class="fish-svg" viewBox="0 0 130 65"><use href="#fish-tropical"/></svg></div></div>
+
+      <!-- Camada DISTANTE (background): pequenos, blur, devagar -->
+      <div class="swim swim-5"><div class="wiggle"><svg class="fish-svg" viewBox="0 0 130 50"><use href="#fish-slim"/></svg></div></div>
+      <div class="swim swim-6"><div class="wiggle"><svg class="fish-svg" viewBox="0 0 130 60"><use href="#fish-koi"/></svg></div></div>
+    </div>
+
+    <!-- Ondas no rodapé -->
+    <svg class="waves" viewBox="0 0 1440 320" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="wave-grad-1" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stop-color="#1e88c4" stop-opacity="0.35"/>
+          <stop offset="50%"  stop-color="#6dd5ed" stop-opacity="0.40"/>
+          <stop offset="100%" stop-color="#1265a8" stop-opacity="0.35"/>
+        </linearGradient>
+        <linearGradient id="wave-grad-2" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stop-color="#0a3d62" stop-opacity="0.42"/>
+          <stop offset="100%" stop-color="#1265a8" stop-opacity="0.42"/>
+        </linearGradient>
+      </defs>
+      <path fill="url(#wave-grad-1)"
+            d="M0,180 C240,260 480,80 720,160 C960,240 1200,100 1440,170 L1440,320 L0,320 Z"/>
+      <path fill="url(#wave-grad-2)"
+            d="M0,240 C240,310 480,170 720,220 C960,270 1200,190 1440,240 L1440,320 L0,320 Z"/>
+    </svg>
+  </div>
+
+  <!-- =================== TELA DE LOGIN / CADASTRO =================== -->
+  <section id="auth-screen" class="screen auth-screen">
+    <div class="auth-card">
+      <div class="logo-block">
+        <div class="logo-mark" aria-hidden="true">
+          <svg viewBox="0 0 44 44" class="brand-mark-svg">
+            <defs>
+              <linearGradient id="login-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%"  stop-color="#6dd5ed"/>
+                <stop offset="55%" stop-color="#1e88c4"/>
+                <stop offset="100%" stop-color="#0a3d62"/>
+              </linearGradient>
+              <linearGradient id="login-fish" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"  stop-color="#ffffff" stop-opacity="0.98"/>
+                <stop offset="100%" stop-color="#e1f3fb" stop-opacity="0.9"/>
+              </linearGradient>
+            </defs>
+            <rect x="2" y="2" width="40" height="40" rx="13" fill="url(#login-grad)"/>
+            <path d="M5,12 Q22,3 39,12 L39,18 Q22,8 5,18 Z" fill="rgba(255,255,255,0.18)"/>
+            <path d="M22,8 L22,22 Q22,30 30,30 Q35,30 35,25"
+                  stroke="rgba(255,255,255,0.85)" stroke-width="2.2"
+                  stroke-linecap="round" fill="none"/>
+            <circle cx="22" cy="7.5" r="1.8" fill="#ffffff"/>
+            <g transform="translate(8,28)">
+              <path d="M0,5 Q6,-2 14,5 Q6,12 0,5 Z M14,5 L20,1 L18,5 L20,9 Z"
+                    fill="url(#login-fish)"/>
+              <circle cx="4" cy="4" r="0.9" fill="#0a3d62"/>
+            </g>
+          </svg>
+        </div>
+        <h1>Portal do Pescador</h1>
+        <p class="tagline">seu copiloto de equipamento de pesca</p>
+      </div>
+
+      <!-- Etapa 1: email -->
+      <form id="form-email" class="auth-form" autocomplete="on">
+        <label for="email-input">E-mail</label>
+        <input type="email" id="email-input" placeholder="voce@exemplo.com" required autocomplete="email">
+        <button type="submit" class="btn btn-primary" id="email-submit">
+          Continuar
+          <span class="btn-spinner" hidden></span>
+        </button>
+        <p class="hint">Se for sua primeira vez, criamos sua conta na sequência.</p>
+      </form>
+
+      <!-- Etapa 2: cadastro (novo usuário) -->
+      <form id="form-cadastro" class="auth-form hidden" autocomplete="on">
+        <div class="welcome-back">
+          <span class="badge-new">Primeira vez por aqui</span>
+          <p>Pra recomendar equipamento de verdade, preciso te conhecer um pouco.</p>
+        </div>
+
+        <label for="nome-input">Seu nome</label>
+        <input type="text" id="nome-input" placeholder="Como quer ser chamado" required autocomplete="name">
+
+        <label for="cep-input">CEP <small class="muted">(pra calcular frete)</small></label>
+        <input type="text" id="cep-input" placeholder="00000-000" required inputmode="numeric" autocomplete="postal-code" maxlength="9">
+        <div id="cep-feedback" class="cep-feedback" hidden></div>
+
+        <label>Nível de experiência</label>
+        <div class="level-pills" id="level-pills">
+          <button type="button" class="pill" data-value="iniciante">🐟 Iniciante</button>
+          <button type="button" class="pill" data-value="intermediario">🎣 Intermediário</button>
+          <button type="button" class="pill" data-value="avancado">🏆 Avançado</button>
+        </div>
+
+        <label for="senha-input">Senha <small class="muted">(mín. 6 caracteres)</small></label>
+        <div class="password-row">
+          <input type="password" id="senha-input" placeholder="••••••" required autocomplete="new-password" minlength="6">
+          <button type="button" class="password-toggle" data-toggle-pwd="#senha-input" aria-label="Mostrar/ocultar senha">👁</button>
+        </div>
+
+        <label for="senha-confirm-input">Confirme a senha</label>
+        <div class="password-row">
+          <input type="password" id="senha-confirm-input" placeholder="••••••" required autocomplete="new-password" minlength="6">
+          <button type="button" class="password-toggle" data-toggle-pwd="#senha-confirm-input" aria-label="Mostrar/ocultar senha">👁</button>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="cadastro-submit">
+          Criar conta e entrar
+          <span class="btn-spinner" hidden></span>
+        </button>
+        <button type="button" class="btn-text" id="voltar-email">← usar outro e-mail</button>
+      </form>
+
+      <!-- Etapa 3: login (usuário existente) -->
+      <form id="form-login" class="auth-form hidden" autocomplete="on">
+        <div class="welcome-back">
+          <span class="badge-known">👋 Que bom te ver de novo</span>
+          <p id="welcome-text">Bem-vindo de volta!</p>
+        </div>
+
+        <label for="login-senha-input">Senha</label>
+        <div class="password-row">
+          <input type="password" id="login-senha-input" placeholder="••••••" required autocomplete="current-password">
+          <button type="button" class="password-toggle" data-toggle-pwd="#login-senha-input" aria-label="Mostrar/ocultar senha">👁</button>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="entrar-submit">
+          Entrar
+          <span class="btn-spinner" hidden></span>
+        </button>
+        <button type="button" class="btn-text" id="voltar-email-2">← usar outro e-mail</button>
+      </form>
+
+      <!-- Etapa 4: definir senha pra conta legada -->
+      <form id="form-set-password" class="auth-form hidden" autocomplete="on">
+        <div class="welcome-back">
+          <span class="badge-new">⚠ Conta sem senha</span>
+          <p>Sua conta foi criada antes do recurso de senha existir. Defina uma agora pra continuar.</p>
+        </div>
+
+        <label for="set-senha-input">Nova senha <small class="muted">(mín. 6 caracteres)</small></label>
+        <div class="password-row">
+          <input type="password" id="set-senha-input" placeholder="••••••" required autocomplete="new-password" minlength="6">
+          <button type="button" class="password-toggle" data-toggle-pwd="#set-senha-input" aria-label="Mostrar/ocultar senha">👁</button>
+        </div>
+
+        <label for="set-senha-confirm-input">Confirme a senha</label>
+        <div class="password-row">
+          <input type="password" id="set-senha-confirm-input" placeholder="••••••" required autocomplete="new-password" minlength="6">
+          <button type="button" class="password-toggle" data-toggle-pwd="#set-senha-confirm-input" aria-label="Mostrar/ocultar senha">👁</button>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="set-senha-submit">
+          Definir senha e entrar
+          <span class="btn-spinner" hidden></span>
+        </button>
+        <button type="button" class="btn-text" id="voltar-email-3">← usar outro e-mail</button>
+      </form>
+
+      <div id="auth-error" class="error-box" hidden></div>
+    </div>
+
+    <footer class="auth-footer">
+      <span>Feito com 🎣 para pescadores brasileiros</span>
+    </footer>
+  </section>
+
+  <!-- =================== TELA DE CHAT =================== -->
+  <section id="chat-screen" class="screen chat-screen hidden">
+    <header class="chat-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 44 44" class="brand-mark-svg">
+            <defs>
+              <linearGradient id="brand-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%"  stop-color="#6dd5ed"/>
+                <stop offset="55%" stop-color="#1e88c4"/>
+                <stop offset="100%" stop-color="#0a3d62"/>
+              </linearGradient>
+              <linearGradient id="brand-fish" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"  stop-color="#ffffff" stop-opacity="0.98"/>
+                <stop offset="100%" stop-color="#e1f3fb" stop-opacity="0.9"/>
+              </linearGradient>
+            </defs>
+            <!-- badge circular gradiente -->
+            <rect x="2" y="2" width="40" height="40" rx="13" fill="url(#brand-grad)"/>
+            <!-- highlight superior (brilho) -->
+            <path d="M5,12 Q22,3 39,12 L39,18 Q22,8 5,18 Z" fill="rgba(255,255,255,0.18)"/>
+            <!-- anzol estilizado -->
+            <path d="M22,8 L22,22 Q22,30 30,30 Q35,30 35,25"
+                  stroke="rgba(255,255,255,0.85)" stroke-width="2.2"
+                  stroke-linecap="round" fill="none"/>
+            <circle cx="22" cy="7.5" r="1.8" fill="#ffffff"/>
+            <!-- peixe (silhueta limpa) -->
+            <g transform="translate(8,28)">
+              <path d="M0,5 Q6,-2 14,5 Q6,12 0,5 Z M14,5 L20,1 L18,5 L20,9 Z"
+                    fill="url(#brand-fish)"/>
+              <circle cx="4" cy="4" r="0.9" fill="#0a3d62"/>
+            </g>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <strong>Portal do Pescador</strong>
+          <small>seu copiloto de equipamento</small>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <button class="header-btn" id="btn-open-locais" title="Locais pra pescar perto de você">
+          📍 <span class="header-btn-label">Locais</span>
+        </button>
+        <button class="header-btn" id="btn-open-cart" title="Carrinho">
+          🛒 <span class="cart-count" id="cart-count">0</span>
+        </button>
+        <div class="user-chip" id="user-chip" title="Meu perfil">
+          <span class="avatar" id="user-avatar">P</span>
+          <span class="user-name" id="user-name">Pescador</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="chat-main">
+      <div class="chat-wrapper">
+        <div class="messages" id="messages" role="log" aria-live="polite"></div>
+
+        <div class="typing-indicator hidden" id="typing">
+          <span></span><span></span><span></span>
+          <small>pensando…</small>
+        </div>
+
+        <form class="composer" id="composer">
+          <button type="button" class="composer-icon" id="btn-clear-chat" title="Limpar conversa (encerra a sessão)">⟳</button>
+          <textarea
+            id="input-message"
+            placeholder="Pergunte sobre varas, molinetes, iscas, anzóis…"
+            rows="1"
+            autocomplete="off"
+            required></textarea>
+          <button type="submit" class="composer-send" id="btn-send" title="Enviar (Enter)">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+              <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
+            </svg>
+          </button>
+        </form>
+        <div class="composer-hint">
+          <span>Enter envia · Shift+Enter quebra linha</span>
+        </div>
+      </div>
+    </main>
+  </section>
+
+  <!-- =================== MODAL: CARRINHO =================== -->
+  <div class="modal hidden" id="modal-cart" role="dialog" aria-modal="true" aria-labelledby="modal-cart-title">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <header class="modal-header">
+        <h2 id="modal-cart-title">🛒 Seu carrinho</h2>
+        <button class="modal-close" data-close-modal aria-label="Fechar">✕</button>
+      </header>
+      <div class="modal-body" id="cart-body">
+        <div class="cart-empty" id="cart-empty">
+          <p>🪝 Carrinho vazio.</p>
+          <small>Pergunte ao bot o que ele recomenda para hoje.</small>
+        </div>
+        <ul class="cart-list" id="cart-list" hidden></ul>
+      </div>
+      <footer class="modal-footer" id="cart-footer" hidden>
+        <div class="cart-total">
+          <small>Total geral</small>
+          <strong id="cart-total-value">R$ 0,00</strong>
+        </div>
+        <button class="btn btn-ghost" id="btn-clear-cart">Esvaziar</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- =================== MODAL: LOCAIS DE PESCA =================== -->
+  <div class="modal hidden" id="modal-locais" role="dialog" aria-modal="true" aria-labelledby="modal-locais-title">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card modal-card-wide">
+      <header class="modal-header">
+        <div>
+          <h2 id="modal-locais-title">📍 Locais pra pescar perto de você</h2>
+          <small class="modal-sub" id="locais-subtitle">Carregando…</small>
+        </div>
+        <button class="modal-close" data-close-modal aria-label="Fechar">✕</button>
+      </header>
+      <div class="modal-body" id="locais-body">
+        <div class="locais-loading" id="locais-loading">
+          <div class="locais-spinner"></div>
+          <p>Buscando os melhores spots da sua região…</p>
+          <small>Isso pode levar alguns segundos.</small>
+        </div>
+        <ul class="locais-list" id="locais-list" hidden></ul>
+        <div class="locais-error" id="locais-error" hidden></div>
+      </div>
+      <footer class="modal-footer">
+        <small class="locais-disclaimer">⚠ Confirme acesso, autorização e regras antes de ir.</small>
+        <button class="btn btn-ghost" id="btn-refresh-locais">Atualizar lista</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- =================== MODAL: PERFIL =================== -->
+  <div class="modal hidden" id="modal-profile" role="dialog" aria-modal="true" aria-labelledby="modal-profile-title">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <header class="modal-header">
+        <h2 id="modal-profile-title">👤 Meu perfil</h2>
+        <button class="modal-close" data-close-modal aria-label="Fechar">✕</button>
+      </header>
+      <form class="modal-body profile-form" id="form-profile">
+        <div class="profile-field">
+          <label>Nome</label>
+          <p class="profile-readonly" id="profile-nome">—</p>
+        </div>
+
+        <div class="profile-field">
+          <label>E-mail</label>
+          <p class="profile-readonly" id="profile-email">—</p>
+        </div>
+
+        <div class="profile-field">
+          <label for="profile-cep">CEP</label>
+          <input type="text" id="profile-cep" inputmode="numeric" maxlength="9" placeholder="00000-000" autocomplete="postal-code">
+          <div id="profile-cep-feedback" class="cep-feedback" hidden></div>
+        </div>
+
+        <div class="profile-field">
+          <label>Nível de experiência</label>
+          <div class="level-pills" id="profile-level-pills">
+            <button type="button" class="pill" data-value="iniciante">🐟 Iniciante</button>
+            <button type="button" class="pill" data-value="intermediario">🎣 Intermediário</button>
+            <button type="button" class="pill" data-value="avancado">🏆 Avançado</button>
+          </div>
+        </div>
+
+        <div id="profile-error" class="error-box" hidden></div>
+        <div id="profile-success" class="success-box" hidden>Perfil atualizado!</div>
+      </form>
+      <footer class="modal-footer">
+        <button type="button" class="btn btn-ghost" id="btn-logout">Sair da conta</button>
+        <button type="button" class="btn btn-primary" id="btn-save-profile">
+          Salvar alterações
+          <span class="btn-spinner" hidden></span>
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- =================== TOASTS =================== -->
+  <div class="toast-stack" id="toasts" aria-live="polite"></div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

@@ -99,10 +99,438 @@ def consultar_frete(cep: str, frete_gratis: bool = False) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Busca de produto no Mercado Livre (server-side, confiável)                  #
+# --------------------------------------------------------------------------- #
+
+_ML_API_URL = "https://api.mercadolibre.com/sites/MLB/search"
+_ML_LISTA_URL = "https://lista.mercadolivre.com.br/{slug}"
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+}
+
+
+def _slug(s: str) -> str:
+    s = s.lower().strip()
+    s = re.sub(r"[áàâã]", "a", s)
+    s = re.sub(r"[éèê]", "e", s)
+    s = re.sub(r"[íì]", "i", s)
+    s = re.sub(r"[óòôõ]", "o", s)
+    s = re.sub(r"[úù]", "u", s)
+    s = re.sub(r"ç", "c", s)
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+def _tentar_anthropic_search(query: str, preco_max: float | None) -> dict[str, Any]:
+    """
+    Faz chamada Anthropic isolada (separada da conversa) com web_search +
+    web_fetch ativas, pedindo SÓ um JSON com o produto. Tem timeout curto
+    e instrução explícita de formato.
+    """
+    import json as _json
+    import os as _os
+
+    api_key = _os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"sucesso": False, "erro": "sem ANTHROPIC_API_KEY"}
+
+    filtro_preco = f" (max R$ {preco_max:.0f})" if preco_max and preco_max > 0 else ""
+    prompt = (
+        f'Buscar UM produto de pesca em QUALQUER loja brasileira (Amazon, Magazine Luiza, Centauro, Casas Bahia, Decathlon, ou Mercado Livre se conseguir URL específica).\n\n'
+        f'Query: "{query}"{filtro_preco}\n\n'
+        "PASSOS:\n"
+        f'1. web_search com a query — pode adicionar "amazon" ou "magazine luiza" ou "centauro" pra variar.\n'
+        '2. Procure URLs ESPECÍFICAS de produto:\n'
+        '   - Amazon: ".../dp/[10 caracteres]"\n'
+        '   - Magazine Luiza: ".../p/[id]"\n'
+        '   - Centauro: ".../p/[id]"\n'
+        '   - Mercado Livre: "produto.mercadolivre.com.br/MLB-..."\n'
+        '   - QUALQUER URL de loja brasileira que termine em um produto específico (não busca).\n'
+        '3. Se a primeira busca não der URL específica, faça MAIS UMA busca com termos diferentes.\n\n'
+        "RESPOSTA OBRIGATÓRIA: SOMENTE este JSON, NADA antes ou depois:\n"
+        '{"nome_produto":"NOME EXATO", "preco":NUMERO, "loja":"Nome da loja", '
+        '"link":"URL ESPECÍFICA QUE APARECEU NA BUSCA", "frete_gratis":true_ou_false}\n\n'
+        "REGRAS:\n"
+        "- link: APENAS URL que apareceu REALMENTE nos resultados (nunca invente).\n"
+        '- NUNCA use URL com "lista.", "/c/", "/search", "/s?", "/busca", "?q=".\n'
+        '- NUNCA invente MLB-1234567890 ou similares.\n'
+        "- Sem narração, sem ```json, sem texto antes/depois.\n"
+        '- Se realmente não achou URL específica em 3 buscas: {"erro":"nada"}'
+    )
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": _os.environ.get("ANTHROPIC_MODEL") or "claude-haiku-4-5-20251001",
+        "max_tokens": 1500,
+        "tools": [
+            {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 3,
+                "user_location": {"type": "approximate", "country": "BR"},
+            },
+        ],
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    # Loop curto pra suportar pause_turn
+    messages = list(payload["messages"])
+    for _ in range(5):
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json={**payload, "messages": messages},
+                timeout=45,
+            )
+        except requests.RequestException as exc:
+            return {"sucesso": False, "erro": f"anthropic: {exc}"}
+
+        if resp.status_code != 200:
+            return {"sucesso": False, "erro": f"anthropic {resp.status_code}"}
+
+        data = resp.json()
+        blocos = data.get("content") or []
+        stop_reason = data.get("stop_reason")
+        messages.append({"role": "assistant", "content": blocos})
+
+        if stop_reason == "pause_turn":
+            continue
+
+        # Resposta final — extrai texto
+        texto = "".join(b.get("text", "") for b in blocos if b.get("type") == "text").strip()
+        texto_limpo = re.sub(r"^```(?:json)?\s*", "", texto)
+        texto_limpo = re.sub(r"\s*```\s*$", "", texto_limpo)
+
+        # ESTRATÉGIA 1: JSON puro
+        try:
+            parsed = _json.loads(texto_limpo)
+            if isinstance(parsed, dict) and "erro" not in parsed:
+                link = str(parsed.get("link", "")).strip()
+                if link and any(s in link for s in ("MLB-", "/dp/", "/p/", "/produto/")):
+                    return _montar_resultado_anthropic(parsed, link)
+        except (_json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+        # ESTRATÉGIA 2: JSON inline no meio do texto
+        m_json = re.search(r"\{[^{}]*\"link\"[^{}]*\}", texto_limpo, re.DOTALL)
+        if m_json:
+            try:
+                parsed = _json.loads(m_json.group(0))
+                link = str(parsed.get("link", "")).strip()
+                if link and any(s in link for s in ("MLB-", "/dp/", "/p/", "/produto/")):
+                    return _montar_resultado_anthropic(parsed, link)
+            except (_json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+        # ESTRATÉGIA 3: extração agressiva de URL no texto
+        padroes_url = [
+            r"https://produto\.mercadolivre\.com\.br/MLB-\d+[\w\-]*",
+            r"https://www\.mercadolivre\.com\.br/[\w\-]+-MLB-?\d+-_JM",
+            r"https://www\.mercadolivre\.com\.br/[\w\-]+_MLB[\d\-]+_JM",
+            r"https://articulo\.mercadoli(?:vre|bre)\.com\.br/MLB-\d+[\w\-]*",
+            r"https://(?:www\.)?amazon\.com\.br/[^\s\"'<>]*?/dp/[A-Z0-9]{10}",
+            r"https://(?:www\.)?amazon\.com\.br/dp/[A-Z0-9]{10}",
+            r"https://(?:www\.)?amazon\.com\.br/gp/product/[A-Z0-9]{10}",
+            r"https://(?:www\.)?magazineluiza\.com\.br/[\w\-/]+/p/\d+[\w\-/]*",
+            r"https://(?:www\.)?casasbahia\.com\.br/[\w\-/]+/p/\d+[\w\-/]*",
+            r"https://(?:www\.)?centauro\.com\.br/[\w\-/]+/p/[\w\-]+",
+        ]
+        link_achado = ""
+        for pat in padroes_url:
+            m = re.search(pat, texto, re.IGNORECASE)
+            if m:
+                cand = re.sub(r"[.,;:!?)\]'\"]+$", "", m.group(0))
+                # Rejeita placeholders
+                if any(p in cand.lower() for p in (
+                    "mlb-1234567890", "mlb-xxx", "/dp/xxx", "/p/xxx",
+                )):
+                    continue
+                link_achado = cand
+                break
+
+        if not link_achado:
+            return {"sucesso": False, "erro": "anthropic sem URL canonica"}
+
+        # Extrai nome
+        nome = query.title()
+        m_nome = re.search(r"\*\*([^*\n]{8,150})\*\*", texto)
+        if m_nome:
+            cand = m_nome.group(1).strip()
+            if not cand.lower().startswith(("preço", "preco", "total", "frete")):
+                nome = cand
+        else:
+            m_nome = re.search(r'"nome_produto"\s*:\s*"([^"]+)"', texto)
+            if m_nome:
+                nome = m_nome.group(1).strip()
+
+        # Extrai preço
+        preco = 0.0
+        m_preco = re.search(r'"preco"\s*:\s*(\d+(?:\.\d+)?)', texto)
+        if m_preco:
+            try:
+                preco = float(m_preco.group(1))
+            except ValueError:
+                pass
+        else:
+            m_preco = re.search(r"R\$\s*(\d[\d.]*[,\.]\d{2})", texto)
+            if m_preco:
+                v = m_preco.group(1).replace(".", "").replace(",", ".")
+                try:
+                    preco = float(v)
+                except ValueError:
+                    pass
+
+        # Frete grátis (heurística)
+        frete_gratis = bool(re.search(r"frete\s+gr[áa]tis|free\s+shipping|\"frete_gratis\":\s*true", texto, re.IGNORECASE))
+
+        # Loja pelo domínio do link
+        loja = "Mercado Livre"
+        ll = link_achado.lower()
+        if "amazon" in ll:
+            loja = "Amazon"
+        elif "magazineluiza" in ll or "magazinevoce" in ll:
+            loja = "Magazine Luiza"
+        elif "casasbahia" in ll:
+            loja = "Casas Bahia"
+        elif "centauro" in ll:
+            loja = "Centauro"
+
+        return {
+            "sucesso": True,
+            "fonte": "anthropic_extracao_agressiva",
+            "nome_produto": nome,
+            "preco": preco,
+            "loja": loja,
+            "link": link_achado,
+            "frete_gratis": frete_gratis,
+        }
+
+    return {"sucesso": False, "erro": "anthropic loop esgotado"}
+
+
+def _montar_resultado_anthropic(parsed: dict, link: str) -> dict[str, Any]:
+    """Empacota dict do JSON do Anthropic em formato esperado."""
+    return {
+        "sucesso": True,
+        "fonte": "anthropic_json",
+        "nome_produto": str(parsed.get("nome_produto", "")).strip(),
+        "preco": float(parsed.get("preco", 0) or 0),
+        "loja": str(parsed.get("loja", "Mercado Livre")).strip() or "Mercado Livre",
+        "link": link,
+        "frete_gratis": bool(parsed.get("frete_gratis", False)),
+    }
+
+
+def _tentar_api_ml(query: str, preco_max: float | None) -> dict[str, Any]:
+    """Tenta a API pública do Mercado Livre."""
+    params: dict[str, Any] = {"q": query, "limit": 15, "condition": "new"}
+    if preco_max and preco_max > 0:
+        params["price"] = f"*-{int(preco_max)}"
+    try:
+        resp = requests.get(
+            _ML_API_URL, params=params, headers=_BROWSER_HEADERS, timeout=10
+        )
+        if resp.status_code != 200:
+            return {"sucesso": False, "erro": f"api ml status {resp.status_code}"}
+        data = resp.json()
+        results = data.get("results") or []
+        for produto in results:
+            link = (produto.get("permalink") or "").strip()
+            if not link:
+                continue
+            # Confere que NÃO é URL de lista
+            if "lista.mercado" in link.lower() or "/c/" in link.lower():
+                continue
+            preco = float(produto.get("price", 0))
+            if preco <= 0:
+                continue
+            frete_gratis = bool((produto.get("shipping") or {}).get("free_shipping"))
+            return {
+                "sucesso": True,
+                "fonte": "api_ml",
+                "nome_produto": produto.get("title", "").strip(),
+                "preco": round(preco, 2),
+                "loja": "Mercado Livre",
+                "link": link,
+                "frete_gratis": frete_gratis,
+                "thumbnail": produto.get("thumbnail", ""),
+            }
+        return {"sucesso": False, "erro": "api ml sem resultados validos"}
+    except requests.RequestException as exc:
+        return {"sucesso": False, "erro": f"api ml: {exc}"}
+
+
+def _tentar_scrape_ml(query: str) -> dict[str, Any]:
+    """
+    Fallback: pega HTML da página de listagem do ML e extrai a primeira
+    URL canônica de produto via regex.
+    """
+    url = _ML_LISTA_URL.format(slug=_slug(query))
+    try:
+        resp = requests.get(url, headers=_BROWSER_HEADERS, timeout=12)
+        if resp.status_code != 200:
+            return {"sucesso": False, "erro": f"scrape ml status {resp.status_code}"}
+        html = resp.text
+        # URLs canônicas: produto.mercadolivre.com.br/MLB-XXX ou
+        # www.mercadolivre.com.br/...-MLB-XXX-_JM
+        padroes = [
+            r"https://produto\.mercadolivre\.com\.br/MLB-\d+[\w\-]*",
+            r"https://www\.mercadolivre\.com\.br/[\w\-/]+-MLB-\d+-_JM",
+        ]
+        for pat in padroes:
+            achados = re.findall(pat, html)
+            if achados:
+                vistos = set()
+                unicos = [u for u in achados if not (u in vistos or vistos.add(u))]
+                link = unicos[0]
+                # Extrai título (do próprio HTML — heurística)
+                titulo_match = re.search(
+                    r"<h2[^>]*>([^<]{8,120})</h2>", html
+                )
+                nome = titulo_match.group(1).strip() if titulo_match else query.title()
+                # Tenta extrair preço da página
+                preco_match = re.search(
+                    r"\"price\"\s*:\s*(\d+(?:\.\d+)?)", html
+                )
+                preco = float(preco_match.group(1)) if preco_match else 0.0
+                return {
+                    "sucesso": True,
+                    "fonte": "scrape_ml",
+                    "nome_produto": nome,
+                    "preco": round(preco, 2),
+                    "loja": "Mercado Livre",
+                    "link": link,
+                    "frete_gratis": False,
+                    "thumbnail": "",
+                }
+        return {"sucesso": False, "erro": "scrape ml sem URL canonica"}
+    except requests.RequestException as exc:
+        return {"sucesso": False, "erro": f"scrape ml: {exc}"}
+
+
+def _url_eh_especifica(link: str) -> bool:
+    """URL específica de produto = tem identificador único, NÃO é listagem."""
+    if not link:
+        return False
+    l = link.lower()
+    # Rejeita listagens
+    if any(s in l for s in (
+        "lista.mercadolivre", "lista.mercadolibre", "listado.mercadolibre",
+        "mercadolivre.com.br/c/", "mercadolibre.com.br/c/",
+        "amazon.com.br/s?", "amazon.com.br/s/",
+        "amazon.com.br/b?", "amazon.com.br/b/",
+        "/search?", "/busca?", "?q=", "&q=", "?keyword=",
+    )):
+        return False
+    # Rejeita placeholders alucinados
+    if any(p in l for p in (
+        "mlb-1234567890", "mlb-xxx", "mlb-xxxxx",
+        "/dp/xxxxxxxxxx", "/dp/xxx", "/p/xxxxx", "example.com",
+    )):
+        return False
+    # Aceita se tem identificador conhecido OU é loja pequena (não-marketplace)
+    tem_id = any(s in l for s in (
+        "mlb-", "/dp/", "/gp/product/", "/p/", "/produto/", "/produtos/",
+    ))
+    if tem_id:
+        return True
+    # Loja pequena sem padrão conhecido — aceita se NÃO é dos marketplaces grandes
+    marketplaces_grandes = (
+        "mercadolivre.com.br", "mercadolibre.com.br",
+        "amazon.com.br", "magazineluiza.com.br", "magazinevoce.com.br",
+        "casasbahia.com.br", "centauro.com.br", "decathlon.com.br",
+        "shopee.com.br",
+    )
+    eh_marketplace = any(m in l for m in marketplaces_grandes)
+    return not eh_marketplace  # loja pequena → aceita
+
+
+def buscar_produto(query: str, preco_max: float | None = None) -> dict[str, Any]:
+    """
+    Busca UM produto real com URL ESPECÍFICA (nunca de listagem).
+
+    Estratégia:
+      1. API pública do Mercado Livre
+      2. Anthropic search (até 3 retries com queries variadas)
+      3. Scraping HTML do ML
+    """
+    if not query or not query.strip():
+        return {"sucesso": False, "erro": "query vazia"}
+
+    # 1) API ML
+    r = _tentar_api_ml(query, preco_max)
+    if r.get("sucesso") and _url_eh_especifica(r.get("link", "")):
+        return r
+
+    # 2) Anthropic search — retenta com variações de query
+    variacoes = [
+        query,
+        f"{query} novo",
+        f"{query} comprar",
+    ]
+    if "iniciante" not in query.lower():
+        variacoes.append(f"{query} iniciante")
+
+    for q in variacoes:
+        r = _tentar_anthropic_search(q, preco_max)
+        if r.get("sucesso") and _url_eh_especifica(r.get("link", "")):
+            return r
+
+    # 3) Scrape ML
+    r = _tentar_scrape_ml(query)
+    if r.get("sucesso") and _url_eh_especifica(r.get("link", "")):
+        return r
+
+    return {
+        "sucesso": False,
+        "erro": "nao consegui achar URL especifica do produto",
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Schemas (client-side tools)                                                 #
 # --------------------------------------------------------------------------- #
 
 TOOL_SCHEMAS = [
+    {
+        "name": "buscar_produto",
+        "description": (
+            "Busca UM produto de pesca real no Mercado Livre e retorna nome, "
+            "preço, loja, URL canônica do produto (sempre específica, nunca "
+            "página de busca), e se tem frete grátis. Use esta tool ao invés "
+            "de web_search/web_fetch para buscas de produto — é mais "
+            "confiável e sempre retorna URL canônica."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Termo de busca direto e específico em PT-BR. Ex: "
+                        "'vara telescópica 1.80m', 'molinete 3000 marine sports', "
+                        "'kit pesca completo'."
+                    ),
+                },
+                "preco_max": {
+                    "type": "number",
+                    "description": "Preço máximo opcional em reais.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
     {
         "name": "validar_cep",
         "description": (
@@ -222,6 +650,11 @@ TOOL_SCHEMAS = [
 # --------------------------------------------------------------------------- #
 
 def executar_tool(nome: str, parametros: dict[str, Any]) -> dict[str, Any]:
+    if nome == "buscar_produto":
+        return buscar_produto(
+            query=parametros.get("query", ""),
+            preco_max=parametros.get("preco_max"),
+        )
     if nome == "validar_cep":
         return validar_cep(parametros.get("cep", ""))
     if nome == "consultar_frete":

@@ -10,9 +10,12 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import re
 import sys
+import threading
+import time
 
 from dotenv import load_dotenv
 
@@ -35,6 +38,50 @@ BANNER = r"""
 ========================================================
 Digite 'sair' a qualquer momento para encerrar a conversa.
 """
+
+
+# --------------------------------------------------------------------------- #
+# Spinner (feedback visual durante operações longas)                          #
+# --------------------------------------------------------------------------- #
+
+class Spinner:
+    """
+    Mostra animação 'Pensando... (Xs)' no terminal enquanto algo demora.
+    Use como context manager:
+        with Spinner("Pensando"):
+            resposta = bot.turno(msg)
+    """
+    CHARS = ["|", "/", "-", "\\"]
+
+    def __init__(self, message: str = "Pensando") -> None:
+        self.message = message
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "Spinner":
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        # limpa a linha do spinner
+        sys.stdout.write("\r" + " " * 60 + "\r")
+        sys.stdout.flush()
+
+    def _spin(self) -> None:
+        chars = itertools.cycle(self.CHARS)
+        inicio = time.monotonic()
+        while not self._stop.is_set():
+            elapsed = int(time.monotonic() - inicio)
+            char = next(chars)
+            sys.stdout.write(f"\r  {char} {self.message}... ({elapsed}s)  ")
+            sys.stdout.flush()
+            # checa a flag em chunks curtos pra encerrar rápido
+            self._stop.wait(timeout=0.1)
 
 
 # --------------------------------------------------------------------------- #
@@ -254,7 +301,11 @@ def main() -> int:
         "procurando hoje."
     )
     try:
-        abertura = bot.turno(primeiro_recado, log_user=False)
+        if args.verbose:
+            abertura = bot.turno(primeiro_recado, log_user=False)
+        else:
+            with Spinner("Pensando"):
+                abertura = bot.turno(primeiro_recado, log_user=False)
         _print_assistente(abertura)
     except Exception as exc:  # noqa: BLE001
         _print_erro(f"Falha na abertura: {exc}")
@@ -272,7 +323,11 @@ def main() -> int:
             continue
         if msg.lower() in PALAVRAS_DE_SAIDA:
             try:
-                despedida = bot.turno(f"O usuário disse: '{msg}'. Despeça-se brevemente.")
+                if args.verbose:
+                    despedida = bot.turno(f"O usuário disse: '{msg}'. Despeça-se brevemente.")
+                else:
+                    with Spinner("Pensando"):
+                        despedida = bot.turno(f"O usuário disse: '{msg}'. Despeça-se brevemente.")
                 _print_assistente(despedida)
             except Exception:  # noqa: BLE001
                 print("\nAté a próxima pescaria! 🎣")
@@ -280,7 +335,11 @@ def main() -> int:
             return 0
 
         try:
-            resposta = bot.turno(msg)
+            if args.verbose:
+                resposta = bot.turno(msg)
+            else:
+                with Spinner("Pensando"):
+                    resposta = bot.turno(msg)
         except KeyboardInterrupt:
             print("\nAté a próxima pescaria! 🎣")
             db.end_conversation(conversation_id)
