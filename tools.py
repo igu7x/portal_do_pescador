@@ -419,6 +419,130 @@ def _tentar_scrape_ml(query: str) -> dict[str, Any]:
         return {"sucesso": False, "erro": f"scrape ml: {exc}"}
 
 
+_SINAIS_404 = (
+    "não conseguimos encontrar esta página",
+    "nao conseguimos encontrar esta pagina",
+    "página não encontrada",
+    "pagina nao encontrada",
+    "produto não encontrado",
+    "anúncio não encontrado",
+    "page not found",
+    "404 not found",
+    "we couldn't find that page",
+    "this page isn't available",
+    "esta página não está disponível",
+    "essa página também estava por aqui",
+)
+
+# Sinais de produto que existe mas está fora de estoque / indisponível pra compra
+_SINAIS_INDISPONIVEL = (
+    "não disponível",
+    "nao disponivel",
+    "não temos previsão de quando este produto",
+    "nao temos previsao de quando este produto",
+    "produto está indisponível",
+    "produto esta indisponivel",
+    "currently unavailable",
+    "atualmente sem estoque",
+    "esgotado no momento",
+    "anúncio pausado",
+    "anuncio pausado",
+    "anúncio finalizado",
+    "anuncio finalizado",
+    "escolha outra variação",
+    "escolha outra variacao",
+    "produto encerrado",
+    "out of stock",
+    "sem estoque",
+)
+
+_PADROES_PRECO = (
+    r'<meta\s+(?:property|itemprop)="(?:product:)?price(?::amount)?"\s+content="(\d+(?:\.\d+)?)"',
+    r'<meta\s+content="(\d+(?:\.\d+)?)"\s+(?:property|itemprop)="(?:product:)?price(?::amount)?"',
+    r'<meta\s+itemprop="price"\s+content="(\d+(?:\.\d+)?)"',
+    r'"price"\s*:\s*"?(\d+(?:\.\d+)?)"?',
+    r'class="a-offscreen"[^>]*>\s*R?\$?\s*(\d{1,3}(?:[.\s]\d{3})*,\d{2})',
+    r'R\$\s*(\d{1,3}(?:[.\s]?\d{3})*,\d{2})',
+)
+
+
+def _verificar_url_e_preco(url: str, timeout: int = 6) -> tuple[bool, float | None]:
+    """
+    UMA única chamada HTTP que faz duas coisas:
+      - verifica se a página existe (não 404)
+      - extrai o preço real, se conseguir
+
+    Retorna (url_existe, preco_ou_None).
+    Otimizado pra ser rápido: lê só ~200KB.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return False, None
+    try:
+        resp = requests.get(
+            url, headers=_BROWSER_HEADERS, timeout=timeout,
+            allow_redirects=True, stream=True,
+        )
+        status = resp.status_code
+
+        # 404/410/451 → claramente não existe
+        if status in (404, 410, 451):
+            resp.close()
+            return False, None
+
+        # 403/503 → anti-bot, assume que existe pro humano (sem preço)
+        if status in (403, 503):
+            resp.close()
+            return True, None
+
+        if not (200 <= status < 400):
+            resp.close()
+            return False, None
+
+        # Lê até 300KB (Amazon esconde preço fundo na página)
+        try:
+            chunk = b""
+            for piece in resp.iter_content(chunk_size=16384, decode_unicode=False):
+                chunk += piece
+                if len(chunk) >= 300_000:
+                    break
+        except requests.RequestException:
+            pass
+        finally:
+            resp.close()
+
+        html = chunk.decode("utf-8", errors="ignore")
+        texto_lower = html.lower()
+
+        # Checa 404 disfarçado
+        if any(s in texto_lower for s in _SINAIS_404):
+            return False, None
+
+        # Checa produto indisponível / fora de estoque
+        if any(s in texto_lower for s in _SINAIS_INDISPONIVEL):
+            return False, None
+
+        # Extrai preço
+        preco = None
+        for pat in _PADROES_PRECO:
+            m = re.search(pat, html, re.IGNORECASE)
+            if not m:
+                continue
+            raw = m.group(1).replace(" ", "")
+            if "," in raw:
+                raw = raw.replace(".", "").replace(",", ".")
+            try:
+                p = float(raw)
+            except ValueError:
+                continue
+            if 5.0 <= p <= 50000.0:
+                preco = round(p, 2)
+                break
+
+        return True, preco
+    except requests.RequestException:
+        return False, None
+
+
 def _url_eh_especifica(link: str) -> bool:
     """URL específica de produto = tem identificador único, NÃO é listagem."""
     if not link:
@@ -458,43 +582,71 @@ def _url_eh_especifica(link: str) -> bool:
 
 def buscar_produto(query: str, preco_max: float | None = None) -> dict[str, Any]:
     """
-    Busca UM produto real com URL ESPECÍFICA (nunca de listagem).
+    Busca UM produto real com URL ESPECÍFICA E ACESSÍVEL.
+
+    Cada candidato precisa passar em DOIS testes:
+      a) URL é específica de produto (não lista/busca/categoria)
+      b) URL existe de verdade (HEAD HTTP, não retorna 404)
 
     Estratégia:
       1. API pública do Mercado Livre
-      2. Anthropic search (até 3 retries com queries variadas)
+      2. Anthropic search (até 4 variações de query)
       3. Scraping HTML do ML
     """
     if not query or not query.strip():
         return {"sucesso": False, "erro": "query vazia"}
 
+    def _validar_e_corrigir(resultado: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        UMA chamada HTTP: confere se URL existe + corrige preço se diferente.
+        Retorna o dict atualizado (se OK) ou None (se URL não passa).
+        """
+        if not resultado.get("sucesso"):
+            return None
+        link = resultado.get("link", "")
+        if not _url_eh_especifica(link):
+            return None
+        existe, preco_real = _verificar_url_e_preco(link)
+        if not existe:
+            return None
+        # Se conseguiu preço e for muito diferente do snippet, sobrescreve
+        if preco_real and preco_real > 0:
+            preco_snippet = float(resultado.get("preco", 0) or 0)
+            if preco_snippet <= 0 or abs(preco_real - preco_snippet) / max(preco_real, 1) > 0.15:
+                resultado["preco"] = preco_real
+                resultado["preco_fonte"] = "pagina_real"
+        # Rejeita se preço final ficou em 0 — não recomenda produto sem preço
+        preco_final = float(resultado.get("preco", 0) or 0)
+        if preco_final <= 0:
+            return None
+        return resultado
+
     # 1) API ML
     r = _tentar_api_ml(query, preco_max)
-    if r.get("sucesso") and _url_eh_especifica(r.get("link", "")):
-        return r
+    validado = _validar_e_corrigir(r)
+    if validado:
+        return validado
 
     # 2) Anthropic search — retenta com variações de query
-    variacoes = [
-        query,
-        f"{query} novo",
-        f"{query} comprar",
-    ]
+    variacoes = [query, f"{query} comprar"]
     if "iniciante" not in query.lower():
         variacoes.append(f"{query} iniciante")
 
     for q in variacoes:
         r = _tentar_anthropic_search(q, preco_max)
-        if r.get("sucesso") and _url_eh_especifica(r.get("link", "")):
-            return r
+        validado = _validar_e_corrigir(r)
+        if validado:
+            return validado
 
     # 3) Scrape ML
     r = _tentar_scrape_ml(query)
-    if r.get("sucesso") and _url_eh_especifica(r.get("link", "")):
-        return r
+    validado = _validar_e_corrigir(r)
+    if validado:
+        return validado
 
     return {
         "sucesso": False,
-        "erro": "nao consegui achar URL especifica do produto",
+        "erro": "nao consegui achar URL especifica e acessivel",
     }
 
 
