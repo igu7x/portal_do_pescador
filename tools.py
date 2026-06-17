@@ -142,17 +142,18 @@ def _tentar_anthropic_search(query: str, preco_max: float | None) -> dict[str, A
 
     filtro_preco = f" (max R$ {preco_max:.0f})" if preco_max and preco_max > 0 else ""
     prompt = (
-        f'Buscar UM produto de pesca em QUALQUER loja brasileira (Amazon, Magazine Luiza, Centauro, Casas Bahia, Decathlon, ou Mercado Livre se conseguir URL específica).\n\n'
+        f'Buscar UM produto de pesca, PRIORIZANDO AMAZON (mais estável). Só use outras lojas (Mercado Livre, Centauro, Casas Bahia, Decathlon) se Amazon não tiver opção.\n\n'
         f'Query: "{query}"{filtro_preco}\n\n'
         "PASSOS:\n"
-        f'1. web_search com a query — pode adicionar "amazon" ou "magazine luiza" ou "centauro" pra variar.\n'
-        '2. Procure URLs ESPECÍFICAS de produto:\n'
-        '   - Amazon: ".../dp/[10 caracteres]"\n'
-        '   - Magazine Luiza: ".../p/[id]"\n'
+        f'1. PRIMEIRA busca: "{query} amazon comprar" — Amazon BR é mais confiável.\n'
+        '2. Procure URLs Amazon: ".../dp/[10 caracteres]" (ex: /dp/B08XYZ1234).\n'
+        '3. Se Amazon não der resultado bom, tenta busca alternativa com Mercado Livre, Centauro ou Casas Bahia.\n'
+        '4. URLs aceitas:\n'
+        '   - Amazon: ".../dp/XXXXXXXXXX" ← PREFERÍVEL\n'
         '   - Centauro: ".../p/[id]"\n'
+        '   - Casas Bahia: ".../p/[id]"\n'
         '   - Mercado Livre: "produto.mercadolivre.com.br/MLB-..."\n'
-        '   - QUALQUER URL de loja brasileira que termine em um produto específico (não busca).\n'
-        '3. Se a primeira busca não der URL específica, faça MAIS UMA busca com termos diferentes.\n\n'
+        '   - EVITE Magazine Luiza (tá instável agora).\n\n'
         "RESPOSTA OBRIGATÓRIA: SOMENTE este JSON, NADA antes ou depois:\n"
         '{"nome_produto":"NOME EXATO", "preco":NUMERO, "loja":"Nome da loja", '
         '"link":"URL ESPECÍFICA QUE APARECEU NA BUSCA", "frete_gratis":true_ou_false}\n\n'
@@ -432,6 +433,11 @@ _SINAIS_404 = (
     "this page isn't available",
     "esta página não está disponível",
     "essa página também estava por aqui",
+    # Magalu — página de erro temporária + página 404
+    "alguma coisa deu errado",
+    "esta página não está disponível agora",
+    "tente de novo em alguns instantes",
+    "achei que essa página também estava por aqui",
 )
 
 # Sinais de produto que existe mas está fora de estoque / indisponível pra compra
@@ -557,6 +563,9 @@ def _url_eh_especifica(link: str) -> bool:
         "/search?", "/busca?", "?q=", "&q=", "?keyword=",
     )):
         return False
+    # Rejeita Magazine Luiza temporariamente (páginas instáveis durante apresentação)
+    if "magazineluiza.com.br" in l or "magazinevoce.com.br" in l:
+        return False
     # Rejeita placeholders alucinados
     if any(p in l for p in (
         "mlb-1234567890", "mlb-xxx", "mlb-xxxxx",
@@ -615,10 +624,8 @@ def buscar_produto(query: str, preco_max: float | None = None) -> dict[str, Any]
             if preco_snippet <= 0 or abs(preco_real - preco_snippet) / max(preco_real, 1) > 0.15:
                 resultado["preco"] = preco_real
                 resultado["preco_fonte"] = "pagina_real"
-        # Rejeita se preço final ficou em 0 — não recomenda produto sem preço
-        preco_final = float(resultado.get("preco", 0) or 0)
-        if preco_final <= 0:
-            return None
+        # URL é válida e existe — aceita mesmo se preço veio 0 do snippet
+        # (usuário vê o preço real ao clicar no link)
         return resultado
 
     # 1) API ML
