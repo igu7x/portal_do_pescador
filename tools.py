@@ -710,43 +710,10 @@ def buscar_produto(query: str, preco_max: float | None = None) -> dict[str, Any]
         if validado:
             return validado
 
-    # 5) ÚLTIMO RECURSO: produtos pré-verificados (URLs testadas, valor da apresentação)
-    fallback_produtos = {
-        "molinete": {
-            "nome_produto": "Molinete Marine Sports VGS 4000",
-            "preco": 59.00,
-            "loja": "Amazon",
-            "link": "https://www.amazon.com.br/Molinete-Marine-Sports-para-pesca/dp/B07NKNWKST",
-            "frete_gratis": False,
-        },
-        "anzol": {
-            "nome_produto": "Anzol Pesca Inoxidável Resistente Kit",
-            "preco": 37.90,
-            "loja": "Amazon",
-            "link": "https://www.amazon.com.br/Anzol-Pesca-Inoxid%C3%A1vel-Resistente-Farpado/dp/B0BMW1BYQ7",
-            "frete_gratis": False,
-        },
-        "kit": {
-            "nome_produto": "Kit Pesca Completo Vara + Molinete + Itens",
-            "preco": 129.90,
-            "loja": "Amazon",
-            "link": "https://www.amazon.com.br/Pesca-Completo-Telesc%C3%B3pica-Molinete-Itens/dp/B08LBT4KSJ",
-            "frete_gratis": True,
-        },
-        "vara": {
-            "nome_produto": "Vara Telescópica Pesca em Fibra de Carbono",
-            "preco": 199.90,
-            "loja": "Amazon",
-            "link": "https://www.amazon.com.br/Telesc%C3%B3pica-Protetora-Retr%C3%A1til-Cani%C3%A7o-Metros/dp/B0CJ49LCYZ",
-            "frete_gratis": True,
-        },
+    return {
+        "sucesso": False,
+        "erro": "nao consegui achar URL especifica e acessivel",
     }
-    # Match por palavra-chave
-    for chave, produto in fallback_produtos.items():
-        if chave in query_lower:
-            return {"sucesso": True, "fonte": "fallback_garantido", **produto}
-    # Default geral: kit
-    return {"sucesso": True, "fonte": "fallback_garantido", **fallback_produtos["vara"]}
 
 
 # --------------------------------------------------------------------------- #
